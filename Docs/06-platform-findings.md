@@ -79,7 +79,7 @@ Python 3.13.12 实测存在。它是 CPython 私有 API(CPython 自测套件在�
 
 ## 2. CC 的 skill 加载行为
 
-### 2.1 `skillOverrides` 四档实测
+### 2.1 `skillOverrides` 三档实测
 
 在 `.claude/settings.json` 写 `{"skillOverrides": {"probe-off": "off",
 "probe-nameonly": "name-only"}}`,然后让 CC 报告它看到了什么:
@@ -90,7 +90,7 @@ Python 3.13.12 实测存在。它是 CPython 私有 API(CPython 自测套件在�
 | `name-only` | 是 | **否**(标记词读不到) |
 | `off` | **否** | 否(整条从列表消失) |
 
-第四档 `user-invocable-only` 未实测。
+第四档 `user-invocable-only` 不在 cckit 支持范围内,故不测试、不使用。
 
 `name-only` 是有用的第三态:CC 知道工具存在、用户可 `/skill-name` 手动调用,
 但 description 不占清单预算。
@@ -138,8 +138,8 @@ CC 之外(claude.ai 上传、Skills API、`package_skill.py`)只接受
   `cckit doctor` 必须检查它,否则用户会遇到"脚本莫名不执行"。
 - `synced/` 是**保留目录名**(claude.ai 同步用),cckit 绝不能占用或写入。
 - 配置目录**不可硬编码** `~/.claude`:CC 二进制中 `CLAUDE_CONFIG_DIR` 出现 55 次、
-  `XDG_CONFIG_HOME` 出现 26 次,说明可重定向。准确回落顺序**尚未实测**,
-  实现时必须先验证。
+  `XDG_CONFIG_HOME` 出现 26 次,说明可重定向。回落顺序已据官方资料核实:
+  `CLAUDE_CONFIG_DIR` > `XDG_CONFIG_HOME/claude` > `~/.claude`。
 
 ### 2.6 改开关不影响已在运行的会话(部分结论)
 
@@ -203,8 +203,6 @@ os.open(O_CREAT|O_EXCL) 加锁 + os.replace → 8 条完整保留
 
 ## 5. 待验证清单(实现前必须补)
 
-- [ ] `CLAUDE_CONFIG_DIR` / `XDG_CONFIG_HOME` 的准确回落顺序
-- [ ] `skillOverrides` 第四档 `user-invocable-only` 的实际行为
 - [ ] 清单预算超限时的真实表现(需装到足够多 skill 才能触发)
 - [ ] 会话中途改动的生效机制(2.6 只得到部分结论;需验证 `SessionStart` 的
       `reloadSkills: true` 与 `ConfigChange` 事件能否用于主动重载)

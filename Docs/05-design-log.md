@@ -105,7 +105,7 @@ CC 也没有义务先去问总控。hook 事件列表里**没有 skill 专用钩
 
 分析过程中我曾断言"CC 没有 skill 粒度开关键,拿不到你要的能力"。**这是错的**——
 我搜的键名(`disabledSkills` / `enabledSkills`)不存在,但真实的键叫 **`skillOverrides`**,
-它有四档:`on` / `name-only` / `user-invocable-only` / `off`。
+它有四档:`on` / `name-only` / `user-invocable-only` / `off`(cckit 只取 `on` / `name-only` / `off` 三档,`user-invocable-only` 不支持)。
 
 修正后发现结论比原判断**更好**:
 

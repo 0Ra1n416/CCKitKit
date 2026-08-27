@@ -51,11 +51,22 @@
 
 ## 当前状态
 
-**已实现**:`src/cckit/link.py` —— 跨平台链接层(create / is_link / remove / is_dangling)。
-已在 Windows 11 与 WSL Ubuntu-26.04 上跑同一份测试,5 项断言双平台全过:
-创建读取、拒绝重复创建、拒绝误删真实目录、删除后源文件存活、悬空链接检出与清理。
+**v0.1 已实现**:`cckit` 命令行工具与全部 8 个命令(`add` / `list` / `enable` /
+`disable` / `name-only` / `remove` / `doctor` / `exec`),`uv run cckit --help` 可用。
 
-**其余均为文档,尚未实现。**
+已落地模块(`src/cckit/`):
+
+- `link.py` —— 跨平台链接层(create / is_link / remove / is_dangling)
+- `config` / `schema` / `manifest` —— 配置解析、JSON Schema + 语义校验
+- `env` —— uv venv / node env 与解释器解析
+- `installer` —— add 全流程(锁 sha、计划确认、store/env/postinstall/registry/link)
+- `exec` —— skill 脚本统一入口(白名单 + 环境变量注入)
+- `state` —— 四态派生 + 文件锁 + 原子写 + 清单预算
+- `registry` —— registry.json 原子读写
+- `lint` —— 命名 / description / CRLF / prompt injection / typosquatting
+- `doctor` —— 只读诊断 + 安全修复
+
+测试:`tests/` 下 56 项,`uv run pytest -q` 全绿;`Docs/examples/video-toolkit` 作为夹具。
 
 ## v0.1 范围
 
@@ -68,7 +79,7 @@
   ——它是 Web 的接入点,事后补会导致两套逻辑
 
 **推迟到 v0.2+**:`cckit.lock` 与 `sync`、`profile`、`update` 的 diff 展示、
-用量统计、description 语义重叠检测、prompt injection 扫描。
+用量统计。
 
 ## 约定
 
