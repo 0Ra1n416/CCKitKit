@@ -12,7 +12,7 @@
 
 ## 安装
 
-**用户安装：**
+**用户安装（推荐）：**
 
 ```bash
 # 先装 uv
@@ -22,6 +22,8 @@
 # 再装 cckit
 uv tool install cckit
 ```
+
+从 Releases 下载安装： 见 [Releases](https://github.com/0Ra1n416/CCKitKit/releases) 。
 
 从源码安装（开发者）：
 
