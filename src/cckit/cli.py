@@ -122,7 +122,7 @@ def _print_list(skills: list[state.SkillState]) -> None:
 def cmd_add(args) -> int:
     installer.install(
         args.source, ref=args.ref, project=args.project,
-        no_enable=args.no_enable, only=args.only, assume_yes=args.yes)
+        no_enable=args.no_enable, only=args.only, assume_yes=args.yes, is_local_path=args.local)
     return 0
 
 
@@ -207,7 +207,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command")
 
     a = sub.add_parser("add", help="安装一个 kit")
-    a.add_argument("source", help="git URL 或本地路径")
+    a.add_argument("source", help="git URL(默认)或本地路径(配合 --local)")
+    a.add_argument("--local", action="store_true", help="source 解释为本地路径进行安装")
     a.add_argument("--ref", help="分支 / tag / commit")
     a.add_argument("--no-enable", action="store_true", help="只装不启用(installed 态)")
     a.add_argument("--project", action="store_true", help="装到当前项目而非全局")

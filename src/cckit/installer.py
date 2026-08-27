@@ -47,17 +47,10 @@ class Plan:
 
 
 # ---- clone ----
-
-def _is_local_path(source: str) -> bool:
-    if "://" in source or source.startswith("git@"):
-        return False
-    return Path(source).expanduser().exists()
-
-
-def _clone(source: str, ref: str | None, tmp_root: Path) -> tuple[Path, str | None]:
+def _clone(source: str, ref: str | None, tmp_root: Path, is_local_path: bool) -> tuple[Path, str | None]:
     """clone 到临时目录,返回 (kit 目录, commit sha)。本地非 git 目录 sha 为 None。"""
     tmp_dir = tmp_root / "kit"
-    if _is_local_path(source):
+    if is_local_path:
         p = Path(source).expanduser().resolve()
         if not p.is_dir():
             raise InstallError(f"本地路径不存在或不是目录: {source}")
@@ -287,8 +280,12 @@ def _installed_descriptions() -> list[str]:
 
 def install(source: str, *, ref: str | None = None, project: bool = False,
             no_enable: bool = False, only: str | None = None,
-            assume_yes: bool = False) -> None:
-    """安装一个 kit。破坏性/高风险操作在非 -y 时需确认。"""
+            assume_yes: bool = False, is_local_path: bool = False) -> None:
+    """安装一个 kit。破坏性/高风险操作在非 -y 时需确认。
+
+    is_local_path=True 时把 source 当本地目录(非 git 目录则 copytree、无 sha);
+    否则当 git URL 直接交给 `git clone`。
+    """
     scope = "project" if project else "global"
     if project:
         # 项目作用域:确保项目根存在。尚无 .claude / cckit.lock 时以 cwd 为项目根,
@@ -301,7 +298,7 @@ def install(source: str, *, ref: str | None = None, project: bool = False,
     reg_added = False
     kit_name: str | None = None
     try:
-        kit_dir, sha = _clone(source, ref, tmp_root)
+        kit_dir, sha = _clone(source, ref, tmp_root, is_local_path)
 
         # 校验 manifest(存在性 → schema → 语义)。失败即中止,不留残留。
         data = manifest.load(kit_dir / "cckit.yaml")

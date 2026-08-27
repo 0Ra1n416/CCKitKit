@@ -14,9 +14,9 @@ import os
 import sys
 from pathlib import Path
 
-# 清单预算上限缺省值:约 200k token 上下文的 1%,按 ~4 字符/token 估算。
+# 清单预算上限缺省值:约 256k token 上下文的 1%,按 ~4 字符/token 估算。
 # skillListingBudgetFraction 会按比例缩放它,见 state.budget()。
-DEFAULT_BUDGET_LIMIT_CHARS = 8000
+DEFAULT_BUDGET_LIMIT_CHARS = 10240
 
 
 def cckit_home() -> Path:
