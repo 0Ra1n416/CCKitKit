@@ -233,23 +233,22 @@ def scope_skills_dirs() -> list[tuple[Scope, Path]]:
     return dirs
 
 
-def _registry_meta(reg: dict, kit: str, name: str) -> tuple[str | None, str | None, str | None]:
-    """返回 (version, env_dir, runtime);registry 无记录时返回 (None, None, None)。"""
+def _registry_meta(reg: dict, kit: str, name: str) -> tuple[str | None, dict[str, str]]:
+    """返回 (version, envs: {runtime: env_dir});registry 无记录时返回 (None, {})。"""
     kit_info = reg.get("kits", {}).get(kit)
     if not kit_info:
-        return None, None, None
+        return None, {}
     for sk in kit_info.get("skills", []):
         if sk.get("name") == name:
-            return kit_info.get("version"), sk.get("env"), sk.get("runtime")
-    return kit_info.get("version"), None, None
+            return kit_info.get("version"), (sk.get("envs") or {})
+    return kit_info.get("version"), {}
 
 
-def _env_status(env_dir: str | None, runtime: str | None) -> bool | None:
-    if runtime is None:
+def _env_status(envs: dict[str, str]) -> bool | None:
+    """所有已建 env 都健康才 True;无 env(纯 prompt)为 None;任一损坏为 False。"""
+    if not envs:
         return None
-    if not env_dir:
-        return False
-    return env_mod.check_env(Path(env_dir), runtime)
+    return all(env_mod.check_env(Path(d), rt) for rt, d in envs.items())
 
 
 def _desc_chars(skill_dir: Path) -> int:
@@ -292,8 +291,8 @@ def list_skills(scope: Scope | None = None) -> list[SkillState]:
                     # 按 (kit, name) 去重:同名 skill 不同 kit 各装一份时,
                     # 一个被 link 不能吞掉另一个未 link 的(见 M1)。
                     linked_managed.add((kit, name))
-                    version, env_dir, runtime = _registry_meta(reg, kit, name)
-                    env_ok = _env_status(env_dir, runtime)
+                    version, envs = _registry_meta(reg, kit, name)
+                    env_ok = _env_status(envs)
                 else:
                     kit, version, env_ok = None, None, None
             else:
@@ -317,7 +316,7 @@ def list_skills(scope: Scope | None = None) -> list[SkillState]:
                     root is not None and str(root) in known)
                 if not in_scope:
                     continue
-                env_ok = _env_status(sk.get("env"), sk.get("runtime"))
+                env_ok = _env_status(sk.get("envs") or {})
                 result.append(SkillState(name, kit_name, sc, "installed", True,
                                          env_ok, _desc_chars(store / kit_name / name),
                                          kit_info.get("version")))
@@ -347,7 +346,7 @@ def list_skills(scope: Scope | None = None) -> list[SkillState]:
                         continue
                     if name in project_kit_names:
                         continue  # 同名项目 kit 存在,覆盖归属项目 kit,不补全局条目
-                    env_ok = _env_status(sk.get("env"), sk.get("runtime"))
+                    env_ok = _env_status(sk.get("envs") or {})
                     st = _derive_state(True, proj_ov[name])
                     result.append(SkillState(name, kit_name, "project", st, True,
                                              env_ok,

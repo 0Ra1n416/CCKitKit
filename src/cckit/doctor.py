@@ -76,17 +76,14 @@ def _check_envs() -> list[Finding]:
     findings: list[Finding] = []
     for kit, info in registry.load().get("kits", {}).items():
         for sk in info.get("skills", []):
-            runtime = sk.get("runtime")
-            if runtime is None:
-                continue
-            env_dir = Path(sk["env"]) if sk.get("env") else None
-            ok = env_dir is not None and env_mod.check_env(env_dir, runtime)
-            if ok:
-                findings.append(Finding("env", "ok", f"{kit}/{sk['name']} env 完整"))
-            else:
-                findings.append(Finding(
-                    "env", "error", f"{kit}/{sk['name']} env 缺失或解释器不可执行",
-                    f"重建:`cckit doctor --fix` 或 `cckit remove {kit}` 后重新 add"))
+            for runtime, env_dir in (sk.get("envs") or {}).items():
+                label = f"{kit}/{sk['name']} [{runtime}]"
+                if env_mod.check_env(Path(env_dir), runtime):
+                    findings.append(Finding("env", "ok", f"{label} env 完整"))
+                else:
+                    findings.append(Finding(
+                        "env", "error", f"{label} env 缺失或解释器不可执行",
+                        f"重建:`cckit doctor --fix` 或 `cckit remove {kit}` 后重新 add"))
     return findings
 
 
@@ -161,7 +158,7 @@ def _check_name_conflicts() -> list[Finding]:
 
 
 def _apply_fixes(findings: list[Finding]) -> None:
-    """只做明确安全的修复:清理悬空 link、重建损坏的 python env。"""
+    """只做明确安全的修复:清理悬空 link、重建损坏的 python/node env。"""
     for _, d in state.scope_skills_dirs():
         if not d.is_dir():
             continue
@@ -176,11 +173,13 @@ def _apply_fixes(findings: list[Finding]) -> None:
         data = manifest.load(mf)
         requires = data.get("requires") or {}
         py_file = (requires.get("python") or {}).get("file")
+        node_file = (requires.get("node") or {}).get("file")
         req = Path(info.get("store", "")) / py_file if py_file else None
+        pkg = Path(info.get("store", "")) / node_file if node_file else None
         constraint = (requires.get("runtime") or {}).get("python")
         for sk in info.get("skills", []):
-            if sk.get("runtime") != "python":
-                continue
-            env_dir = Path(sk["env"])
-            if not env_mod.check_env(env_dir, "python"):
-                env_mod.create_python_env(env_dir, constraint, req)
+            for runtime, env_dir in (sk.get("envs") or {}).items():
+                if runtime == "python" and not env_mod.check_env(Path(env_dir), "python"):
+                    env_mod.create_python_env(Path(env_dir), constraint, req)
+                elif runtime == "node" and not env_mod.check_env(Path(env_dir), "node"):
+                    env_mod.create_node_env(Path(env_dir), pkg)

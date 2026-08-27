@@ -20,14 +20,20 @@ class ExecError(CckitError):
     """exec 失败。"""
 
 
+def _runtime_for_script(script_path: Path) -> str:
+    """脚本扩展名 → runtime。.py → python;.js/.mjs → node。"""
+    ext = script_path.suffix.lower()
+    if ext == ".py":
+        return "python"
+    if ext in (".js", ".mjs"):
+        return "node"
+    raise ExecError(f"不支持的脚本类型 {script_path.name}(v0.1 仅支持 .py/.js/.mjs)")
+
+
 def run(skill: str, script: str, args: list[str], scope: str = "global") -> int:
     # 按作用域定位:同名 skill 全局/项目各装一份时,靠 scope 消歧。
     kit_name, skill_info = registry.find_skill(skill, scope)
     kit_info = registry.get_kit(kit_name)
-    runtime = skill_info.get("runtime")
-
-    if runtime is None:
-        raise ExecError(f"skill {skill!r} 是纯 prompt skill(needs 为空),没有可执行脚本")
 
     store = Path(kit_info["store"])
     data = manifest.load(store / "cckit.yaml")
@@ -47,25 +53,20 @@ def run(skill: str, script: str, args: list[str], scope: str = "global") -> int:
     if not script_path.is_relative_to(skill_dir):
         raise ExecError(f"脚本路径越出 skill 目录,拒绝执行: {script}")
 
-    # 解析解释器
-    env_dir = Path(skill_info["env"]) if skill_info.get("env") else None
-    if runtime == "python":
-        if env_dir is None or not env_mod.check_env(env_dir, "python"):
-            raise ExecError(f"skill {skill!r} 的 env 缺失或损坏,请运行 `cckit doctor`")
-        interp = str(env_mod.python_interpreter(env_dir))
-    elif runtime == "node":
-        if env_dir is None or not env_mod.check_env(env_dir, "node"):
-            raise ExecError(f"skill {skill!r} 的 env 缺失或损坏,请运行 `cckit doctor`")
-        interp = "node"
-    else:
-        raise ExecError(f"不支持的 runtime {runtime!r}")
+    # 按脚本扩展名选 runtime,再取对应 env(一个 skill 可同时有 python 与 node)
+    runtime = _runtime_for_script(script_path)
+    envs = skill_info.get("envs") or {}
+    env_dir = Path(envs[runtime]) if envs.get(runtime) else None
+    if env_dir is None or not env_mod.check_env(env_dir, runtime):
+        raise ExecError(f"skill {skill!r} 的 {runtime} env 缺失或损坏,请运行 `cckit doctor`")
+    interp = str(env_mod.python_interpreter(env_dir)) if runtime == "python" else "node"
 
     # 注入环境变量
     env = os.environ.copy()
     env["CCKIT_SKILL_DIR"] = str(skill_dir)
     env["CCKIT_KIT_DIR"] = str(store)
-    env["CCKIT_ENV_DIR"] = str(env_dir) if env_dir else ""
-    if runtime == "node" and env_dir is not None:
+    env["CCKIT_ENV_DIR"] = str(env_dir)
+    if runtime == "node":
         # node_modules 装在 env 目录下,require() 需要 NODE_PATH 才找得到
         env["NODE_PATH"] = str(env_dir / "node_modules")
     for var in data.get("env", []):

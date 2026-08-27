@@ -160,40 +160,39 @@ def render_plan(plan: Plan) -> str:
 
 # ---- env / postinstall ----
 
-def build_envs(data: dict, kit_dir: Path) -> dict[str, tuple[Path | None, str | None]]:
-    """按 skills 的 needs 为每个 skill 建独立 env。返回 {name: (env_dir, runtime)}。
+def build_envs(data: dict, kit_dir: Path) -> dict[str, dict[str, Path]]:
+    """按 skills 的 needs 为每个 skill 建 env。返回 {name: {runtime: env_dir}}。
 
-    纯 prompt skill(needs 不含 python/node)不建 env(env_dir=None, runtime=None)。
-    中途某个 skill 建 env 失败时,清掉本次已建的 env 再抛,避免留下孤儿 env
-    (否则 install 的回滚拿不到 env_dirs,第 2 个 skill 失败会让第 1 个成孤儿)。
+    一个 skill 可同时需要 python 与 node(各自建独立 env);needs 不含
+    python/node 的纯 prompt skill 返回 {}。中途某 skill 失败时清掉本次已建
+    的 env 再抛,避免留下孤儿 env(否则 install 的回滚拿不到 env_dirs)。
     """
     requires = data.get("requires") or {}
     runtime = requires.get("runtime") or {}
     py_constraint = runtime.get("python")
-    node_constraint = runtime.get("node")
     py_file = (requires.get("python") or {}).get("file")
     node_file = (requires.get("node") or {}).get("file")
     req_path = kit_dir / py_file if py_file else None
     pkg_path = kit_dir / node_file if node_file else None
 
-    result: dict[str, tuple[Path | None, str | None]] = {}
+    result: dict[str, dict[str, Path]] = {}
     created: list[Path] = []
     try:
         for sk in data.get("skills", []):
             name = sk["name"]
             needs = set(sk.get("needs", []))
+            envs: dict[str, Path] = {}
             if "python" in needs:
-                env_dir = config.envs_dir() / f"{data['kit']}__{name}"
+                env_dir = config.envs_dir() / f"{data['kit']}__{name}__python"
                 env_mod.create_python_env(env_dir, py_constraint, req_path)
                 created.append(env_dir)
-                result[name] = (env_dir, "python")
-            elif "node" in needs:
-                env_dir = config.envs_dir() / f"{data['kit']}__{name}"
+                envs["python"] = env_dir
+            if "node" in needs:
+                env_dir = config.envs_dir() / f"{data['kit']}__{name}__node"
                 env_mod.create_node_env(env_dir, pkg_path)
                 created.append(env_dir)
-                result[name] = (env_dir, "node")
-            else:
-                result[name] = (None, None)
+                envs["node"] = env_dir
+            result[name] = envs
     except Exception:
         for d in created:
             shutil.rmtree(d, ignore_errors=True)
@@ -211,13 +210,13 @@ def _script_interpreter(script: Path, py_interp: Path | None) -> str:
 
 
 def run_postinstall(steps: list[dict], kit_dir: Path,
-                    envs: dict[str, tuple[Path | None, str | None]]) -> None:
+                    envs: dict[str, dict[str, Path]]) -> None:
     """执行 postinstall。when=python/node 仅在对应环境建好后执行。
 
     脚本 cwd 为 kit 根;约束:只允许操作 kit 自己的目录(靠声明+审查+文档)。
     """
-    python_envs = [d for d, r in envs.values() if r == "python" and d]
-    node_built = any(r == "node" for _, r in envs.values())
+    python_envs = [d for m in envs.values() for rt, d in m.items() if rt == "python"]
+    node_built = any(rt == "node" for m in envs.values() for rt in m)
     py_interp = env_mod.python_interpreter(python_envs[0]) if python_envs else None
     for step in steps:
         run = step.get("run")
@@ -238,17 +237,15 @@ def run_postinstall(steps: list[dict], kit_dir: Path,
 # ---- registry 记录 ----
 
 def _registry_record(source: str, ref: str | None, sha: str | None, data: dict,
-                     store_target: Path, envs: dict[str, tuple[Path | None, str | None]],
+                     store_target: Path, envs: dict[str, dict[str, Path]],
                      scope: str) -> dict:
     root = config.project_root()
     known = "global" if scope == "global" else str(root)
     skills = []
     for sk in data.get("skills", []):
-        env_dir, runtime = envs[sk["name"]]
         skills.append({
             "name": sk["name"],
-            "env": str(env_dir) if env_dir else None,
-            "runtime": runtime,
+            "envs": {rt: str(d) for rt, d in envs[sk["name"]].items()},
             "needs": list(sk.get("needs", [])),
         })
     return {
@@ -356,7 +353,7 @@ def install(source: str, *, ref: str | None = None, project: bool = False,
 
         # 建 env
         envs = build_envs(data, store_target)
-        env_dirs = [d for d, _ in envs.values() if d]
+        env_dirs = [d for m in envs.values() for d in m.values()]
 
         # postinstall
         run_postinstall(data.get("postinstall") or [], store_target, envs)
@@ -418,8 +415,8 @@ def remove_kit(kit: str, keep_env: bool = False) -> None:
     # 删 env
     if not keep_env:
         for sk in info.get("skills", []):
-            if sk.get("env"):
-                shutil.rmtree(Path(sk["env"]), ignore_errors=True)
+            for env_dir in (sk.get("envs") or {}).values():
+                shutil.rmtree(Path(env_dir), ignore_errors=True)
 
     # 删 store
     store = Path(info.get("store", ""))

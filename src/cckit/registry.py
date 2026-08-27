@@ -1,7 +1,7 @@
 """registry.json 的读写。
 
 registry 只存"从文件系统观测不出来"的东西:kit 来源(URL/ref/sha)、版本、
-env 路径、runtime、known_scopes。启用状态是派生的,不写这里(见 state.py)。
+envs 路径映射(每个 skill 的 runtime → env_dir)、known_scopes。启用状态是派生的,不写这里(见 state.py)。
 写入必须原子(临时文件 + os.replace),避免半截 JSON。
 """
 from __future__ import annotations
