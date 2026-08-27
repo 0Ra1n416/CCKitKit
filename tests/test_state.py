@@ -180,9 +180,10 @@ def test_global_skill_project_get_state_reads_override(tmp_path):
     install_kit_skill("foo")
     _make_project_root(tmp_path)
 
+    state.set_state("foo", "enabled", "global")  # name-only --project 要求全局非 installed
     state.set_state("foo", "name-only", "project")
     assert state.get_state("foo", "project") == "name-only"
-    assert state.get_state("foo", "global") == "installed"  # 全局不受影响
+    assert state.get_state("foo", "global") == "enabled"  # 全局不受影响
 
 
 def test_global_skill_project_list_surfaces_override(tmp_path):
@@ -197,27 +198,76 @@ def test_global_skill_project_list_surfaces_override(tmp_path):
     assert proj[0].kit == "testkit"
     assert proj[0].scope == "project"
     assert proj[0].state == "off"
-    # 没有项目覆盖前,项目作用域不该出现它
-    state.set_state("foo", "installed", "project")
+    # 清掉项目覆盖后(enable --project = 跟随全局),项目作用域不再出现它
+    state.set_state("foo", "enabled", "global")
+    state.set_state("foo", "enabled", "project")
     assert [s for s in state.list_skills("project") if s.name == "foo"] == []
 
 
-def test_global_skill_project_enabled_and_installed_clear(tmp_path):
-    """enabled / installed --project 对全局 skill 都=清掉覆盖、回到跟随全局。"""
+def test_global_skill_project_enabled_raises(tmp_path):
+    """全局 skill --project enable:没有"只在项目里启用"的概念,报错给出正确做法。"""
+    install_kit_skill("foo")
+    _make_project_root(tmp_path)
+
+    with pytest.raises(CckitError, match="是全局 skill"):
+        state.set_state("foo", "enabled", "project")
+
+
+def test_global_skill_project_purge_raises(tmp_path):
+    """disable --purge --project 对全局 skill 不能执行(无项目 link 可删),报错提示去掉 --project。"""
+    install_kit_skill("foo")
+    _make_project_root(tmp_path)
+
+    with pytest.raises(CckitError, match="无法在项目作用域删除 link"):
+        state.set_state("foo", "installed", "project")
+
+
+def test_global_purge_clears_project_override(tmp_path):
+    """全局 disable --purge 同时清掉项目级覆盖,避免孤儿覆盖(D-15)。"""
     install_kit_skill("foo")
     root = _make_project_root(tmp_path)
 
+    state.set_state("foo", "enabled", "global")
     state.set_state("foo", "off", "project")
-    state.set_state("foo", "enabled", "project")
-    local = json.loads((root / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
-    assert "foo" not in local.get("skillOverrides", {})
-    assert state.get_state("foo", "project") == "installed"
+    state.set_state("foo", "installed", "global")
 
-    state.set_state("foo", "name-only", "project")
-    state.set_state("foo", "installed", "project")
     local = json.loads((root / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
     assert "foo" not in local.get("skillOverrides", {})
-    assert state.get_state("foo", "project") == "installed"
+    assert state.get_state("foo", "global") == "installed"
+
+
+def test_global_skill_project_name_only_installed_raises(tmp_path):
+    """全局 skill installed 时 name-only --project 也报错(没有"只在项目里启用"的概念)。"""
+    install_kit_skill("foo")
+    _make_project_root(tmp_path)
+
+    with pytest.raises(CckitError, match="是全局 skill"):
+        state.set_state("foo", "name-only", "project")
+
+
+def test_global_skill_project_name_only_when_global_off_raises(tmp_path):
+    """全局 off 时,项目作用域不允许设为 name-only。"""
+    install_kit_skill("foo")
+    _make_project_root(tmp_path)
+
+    state.set_state("foo", "off", "global")
+    with pytest.raises(CckitError, match="off 状态"):
+        state.set_state("foo", "name-only", "project")
+
+
+def test_global_skill_project_enable_syncs_when_global_enabled(tmp_path):
+    """全局非 installed 时,enable --project = 清掉项目覆盖、跟随全局(不报错)。"""
+    install_kit_skill("foo")
+    root = _make_project_root(tmp_path)
+
+    state.set_state("foo", "enabled", "global")
+    state.set_state("foo", "off", "project")
+    ret = state.set_state("foo", "enabled", "project")
+
+    local = json.loads((root / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert "foo" not in local.get("skillOverrides", {})
+    assert ret and "同步" in ret
+    assert state.get_state("foo", "global") == "enabled"
 
 
 def test_remove_kit_cleans_project_override(tmp_path):

@@ -148,26 +148,38 @@ def cmd_list(args) -> int:
 
 def cmd_enable(args) -> int:
     scope = _scope(args)
-    state.set_state(args.skill, "enabled", scope)
-    print(f"{args.skill} → enabled({scope}),新会话生效")
+    ret = state.set_state(args.skill, "enabled", scope)
+    if ret:
+        print(ret)
+    else:
+        print(f"{args.skill} → enabled({scope}),新会话生效")
     return 0
 
 
 def cmd_disable(args) -> int:
     scope = _scope(args)
     if args.purge:
-        state.set_state(args.skill, "installed", scope)
-        print(f"{args.skill} → installed({scope}),新会话生效")
+        ret = state.set_state(args.skill, "installed", scope)
+        if ret:
+            print(ret)
+        else:
+            print(f"{args.skill} → installed({scope}),新会话生效")
     else:
-        state.set_state(args.skill, "off", scope)
-        print(f"{args.skill} → off({scope}),新会话生效")
+        ret = state.set_state(args.skill, "off", scope)
+        if ret:
+            print(ret)
+        else:
+            print(f"{args.skill} → off({scope}),新会话生效")
     return 0
 
 
 def cmd_name_only(args) -> int:
     scope = _scope(args)
-    state.set_state(args.skill, "name-only", scope)
-    print(f"{args.skill} → name-only({scope}),新会话生效")
+    ret = state.set_state(args.skill, "name-only", scope)
+    if ret:
+        print(ret)
+    else:
+        print(f"{args.skill} → name-only({scope}),新会话生效")
     return 0
 
 

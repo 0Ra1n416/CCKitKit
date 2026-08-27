@@ -405,7 +405,7 @@ def _resolve_for_project(name: str) -> tuple[str, bool]:
 
 
 def set_state(name: str, state: StateName, scope: Scope = "global",
-              kit: str | None = None) -> None:
+              kit: str | None = None) -> None | str:
     """把 skill 切到四态之一。enabled/name-only/off 需要 link;installed 删 link。
 
     kit 缺省时按 skill 名在 registry 里唯一查找;多个 kit 同名时报错。
@@ -413,8 +413,11 @@ def set_state(name: str, state: StateName, scope: Scope = "global",
 
     特例(D-15):全局 kit 的 skill 在项目作用域开关时,不建/不删项目 link ——
     off/name-only 只写 settings.local.json 的 skillOverrides,并把项目根记入
-    override_scopes;enabled/installed 都=清掉项目覆盖、回到跟随全局(全局 skill
-    在项目里没有独立 link 可删,二者在此等价)。
+    override_scopes;enabled 清掉项目覆盖=跟随全局(返回同步提示)。三个例外会报错:
+    全局 installed 时 enable/name-only --project(没有"只在项目里启用"的概念)、
+    全局 off 时 name-only --project、installed --project(即 disable --purge
+    --project,无项目 link 可删)。
+    全局作用域 purge 时,同时清掉该 skill 在各项目根的项目级覆盖,避免孤儿覆盖。
     """
     if state not in ("installed", "enabled", "name-only", "off"):
         raise CckitError(f"未知状态 {state!r}")
@@ -428,16 +431,36 @@ def set_state(name: str, state: StateName, scope: Scope = "global",
         is_global_kit = True
 
     if scope == "project" and is_global_kit:
+        if (state == "enabled" or state == "name-only") and get_state(name, "global") == "installed":
+            # 全局 skill installed时，没有"只在项目里启用"的概念:它在项目里可不可见只取决于全局
+            # 有没有 link。这里不能静默当成"清掉项目覆盖"成功返回(没有覆盖时是纯
+            # no-op,会误导用户),直接给出正确做法。
+            raise CckitError(
+                f"{name} 是全局 skill，请去掉 --project 在全局启用，"
+                f"如需只安装到项目，请 remove 后重新 add"
+            )
+        if state == "name-only" and get_state(name, "global") == "off":
+            raise CckitError(
+                f"{name} 目前在全局作用域是 off 状态，无法在项目作用域设置为 name-only。"
+            )
+        if state == "installed":
+            # disable <name> --purge --project 指令不允许操作全局 skill 的 link。
+            raise CckitError(
+                f"{name} 是全局 skill，无法在项目作用域删除 link。"
+                "如需在项目作用域禁用，请使用 disable <name> --project。"
+                "如需解除全局link，请去掉 --project 在全局作用域执行 disable <name> --purge。"
+            )
         # 全局 skill 的项目级覆盖:不碰 link,只写 settings.local.json 的
         # skillOverrides。off/name-only 写覆盖并记入 override_scopes;
-        # enabled/installed 都表示"清掉项目覆盖、回到跟随全局"(全局 skill 在
-        # 项目里没有独立的 link 可删,enabled 与 installed 在此等价)。
         value = _STATE_TO_OVERRIDE[state] if state in ("off", "name-only") else None
         _write_override("project", name, value)
         if value is not None:
             root = config.project_root()
             if root is not None:
                 registry.add_override_scope(kit_name, str(root))
+        else:
+            # 其他enable --project 代表"清掉项目覆盖、回到跟随全局",不建 link,不报错,直接返回。
+            return f"{name} 在项目作用域已与全局同步({get_state(name, 'global')}),新会话生效"
         return
 
     target = config.store_dir() / kit_name / name
@@ -450,6 +473,12 @@ def set_state(name: str, state: StateName, scope: Scope = "global",
         if link.is_link(link_path) or link.is_dangling(link_path):
             link.remove(link_path)
         _write_override(scope, name, None)
+        if scope == "global":
+            # 全局 purge 同时清掉该 skill 在各项目根的项目级覆盖,避免孤儿覆盖(见 D-15)。
+            info = registry.get_kit(kit_name)
+            for scope_value in (info or {}).get("override_scopes") or []:
+                if scope_value and scope_value != "global":
+                    remove_overrides([name], "project", root=Path(scope_value))
         return
 
     if not target.is_dir():
@@ -461,6 +490,7 @@ def set_state(name: str, state: StateName, scope: Scope = "global",
     else:
         link.create(target, link_path)
     _write_override(scope, name, _STATE_TO_OVERRIDE[state])
+    return
 
 
 def budget(scope: Scope | None = None) -> tuple[int, int]:
