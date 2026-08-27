@@ -415,7 +415,7 @@ def install(source: str, *, ref: str | None = None, project: bool = False,
                     f"--only 指定的 skill 不在 kit 中: {', '.join(sorted(unknown))}")
 
         # lint。error 中止;warn 展示。
-        msgs = lint.lint_kit(kit_dir, data, _installed_descriptions())
+        msgs = lint.LintKit(kit_dir, data, _installed_descriptions()).lint_kit()
         for m in msgs:
             print(f"[{m.level}] {m.message}")
         if any(m.level == "error" for m in msgs):
