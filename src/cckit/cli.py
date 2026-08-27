@@ -157,7 +157,7 @@ def cmd_disable(args) -> int:
     scope = _scope(args)
     if args.purge:
         state.set_state(args.skill, "installed", scope)
-        print(f"{args.skill} → installed(已删 link),新会话生效")
+        print(f"{args.skill} → installed({scope}),新会话生效")
     else:
         state.set_state(args.skill, "off", scope)
         print(f"{args.skill} → off({scope}),新会话生效")

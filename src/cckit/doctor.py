@@ -139,17 +139,24 @@ def _check_budget() -> list[Finding]:
 def _check_name_conflicts() -> list[Finding]:
     findings: list[Finding] = []
     # 复用 state.list_skills 的扫描结果,不自己枚举目录
-    by_name: dict[str, set[str]] = {}
+    by_name: dict[str, set[tuple[str, str | None]]] = {}
     for s in state.list_skills(None):
         if s.state == "installed":
             continue  # 没 link 不被扫描,不参与覆盖
-        by_name.setdefault(s.name, set()).add(s.scope)
-    for name, scopes in sorted(by_name.items()):
-        if "global" in scopes and "project" in scopes:
-            findings.append(Finding(
-                "conflict", "warn",
-                f"同名 skill {name!r} 同时存在全局与项目,全局会覆盖项目版",
-                f"二选一:`cckit disable {name}`(全局)或 `cckit disable {name} --project`"))
+        by_name.setdefault(s.name, set()).add((s.scope, s.kit))
+    for name, identities in sorted(by_name.items()):
+        g = {kit for scope, kit in identities if scope == "global"}
+        p = {kit for scope, kit in identities if scope == "project"}
+        if not g or not p:
+            continue
+        # 同一个 managed kit 的 skill 同时出现在全局与项目作用域 = D-15 的
+        # "全局 skill 按项目覆盖",不是同名冲突;同名冲突必须来自不同来源。
+        if g == p and len(g) == 1 and None not in g:
+            continue
+        findings.append(Finding(
+            "conflict", "warn",
+            f"同名 skill {name!r} 同时存在全局与项目,全局会覆盖项目版",
+            f"二选一:`cckit disable {name}`(全局)或 `cckit disable {name} --project`"))
     return findings
 
 

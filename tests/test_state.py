@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from cckit import config, link, registry, state
+from cckit import config, installer, link, registry, state
 from cckit.errors import CckitError
 from helpers import install_kit_skill
 
@@ -149,3 +149,116 @@ def test_list_all_same_name_different_scopes(tmp_path):
     assert ("projkit", "hello") in by
     assert by[("projkit", "hello")].scope == "project"
     assert by[("projkit", "hello")].state == "enabled"
+
+
+# ---- D-15:全局 skill 的项目级覆盖(不建/不删项目 link) ----
+
+def _make_project_root(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    return config.project_root()
+
+
+def test_global_skill_project_off_writes_override_only(tmp_path):
+    """全局 skill --project off:只写 settings.local.json,不建项目 link,
+    并把项目根记入 override_scopes。"""
+    install_kit_skill("foo")
+    root = _make_project_root(tmp_path)
+
+    state.set_state("foo", "off", "project")
+
+    # 不建项目 link
+    assert not (root / ".claude" / "skills" / "foo").exists()
+    # 覆盖写进 settings.local.json
+    local = json.loads((root / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert local["skillOverrides"]["foo"] == "off"
+    # 项目根记入 override_scopes
+    assert str(root) in registry.get_kit("testkit")["override_scopes"]
+
+
+def test_global_skill_project_get_state_reads_override(tmp_path):
+    """get_state --project 在无 link、有覆盖时按覆盖推导,而非报 installed。"""
+    install_kit_skill("foo")
+    _make_project_root(tmp_path)
+
+    state.set_state("foo", "name-only", "project")
+    assert state.get_state("foo", "project") == "name-only"
+    assert state.get_state("foo", "global") == "installed"  # 全局不受影响
+
+
+def test_global_skill_project_list_surfaces_override(tmp_path):
+    """list_skills --project 把带项目覆盖的全局 skill 列出(off)。"""
+    install_kit_skill("foo", runtime=None, needs=[], desc="global foo")
+    _make_project_root(tmp_path)
+
+    state.set_state("foo", "off", "project")
+
+    proj = [s for s in state.list_skills("project") if s.name == "foo"]
+    assert len(proj) == 1
+    assert proj[0].kit == "testkit"
+    assert proj[0].scope == "project"
+    assert proj[0].state == "off"
+    # 没有项目覆盖前,项目作用域不该出现它
+    state.set_state("foo", "installed", "project")
+    assert [s for s in state.list_skills("project") if s.name == "foo"] == []
+
+
+def test_global_skill_project_enabled_and_installed_clear(tmp_path):
+    """enabled / installed --project 对全局 skill 都=清掉覆盖、回到跟随全局。"""
+    install_kit_skill("foo")
+    root = _make_project_root(tmp_path)
+
+    state.set_state("foo", "off", "project")
+    state.set_state("foo", "enabled", "project")
+    local = json.loads((root / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert "foo" not in local.get("skillOverrides", {})
+    assert state.get_state("foo", "project") == "installed"
+
+    state.set_state("foo", "name-only", "project")
+    state.set_state("foo", "installed", "project")
+    local = json.loads((root / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert "foo" not in local.get("skillOverrides", {})
+    assert state.get_state("foo", "project") == "installed"
+
+
+def test_remove_kit_cleans_project_override(tmp_path):
+    """remove 全局 kit 时,同时清掉它在各项目根留下的 skillOverrides 覆盖。"""
+    install_kit_skill("foo")
+    root = _make_project_root(tmp_path)
+    state.set_state("foo", "off", "project")
+
+    installer.remove_kit("testkit")
+
+    local = json.loads((root / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    assert "foo" not in local.get("skillOverrides", {})
+
+
+def test_project_override_not_misattributed_to_global_kit(tmp_path):
+    """项目 kit 与全局 kit 同名 skill 时,项目覆盖归属项目 kit,
+    list --project 不得把该覆盖误归属到全局 kit(D-15 读回守卫)。"""
+    root = _make_project_root(tmp_path)
+    store = config.store_dir()
+
+    # 全局 kit:同名 skill "foo"
+    install_kit_skill("foo")  # testkit,known_scopes=["global"]
+    # 项目 kit:同名 skill "foo"
+    kstore = store / "projkit"
+    (kstore / "foo").mkdir(parents=True)
+    (kstore / "foo" / "SKILL.md").write_text(
+        "---\ndescription: project foo\n---\n", encoding="utf-8")
+    registry.add_kit("projkit", {
+        "source": {"url": "https://x/projkit", "ref": None, "sha": None},
+        "version": "1.0.0",
+        "store": str(kstore),
+        "skills": [{"name": "foo", "env": None, "runtime": None, "needs": []}],
+        "known_scopes": [str(root)]})
+
+    proj_skills = root / ".claude" / "skills"
+    proj_skills.mkdir(parents=True)
+    link.create(kstore / "foo", proj_skills / "foo")
+
+    state.set_state("foo", "off", "project")
+
+    proj = [s for s in state.list_skills("project") if s.name == "foo"]
+    assert len(proj) == 1
+    assert proj[0].kit == "projkit"
+    assert proj[0].state == "off"

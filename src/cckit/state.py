@@ -322,21 +322,87 @@ def list_skills(scope: Scope | None = None) -> list[SkillState]:
                                          env_ok, _desc_chars(store / kit_name / name),
                                          kit_info.get("version")))
 
+    # 全局 kit 的 skill 带项目级覆盖(off/name-only/on)时,项目作用域也要列出
+    # 它 —— 即便项目里没有 link。这是 D-15 的"全局 skill 按项目覆盖"读回路径。
+    # 注意:project skill 若有同名全局 skill,覆盖是写给项目 kit 的(见 set_state
+    # 的定位顺序),不能误归属到全局 kit。故这里只对"项目作用域无同名 kit"的
+    # 全局 skill 补项目级条目。
+    if (scope is None or scope == "project") and root is not None:
+        proj_ov = _read_overrides("project")
+        if proj_ov:
+            project_kit_names = {
+                sk.get("name")
+                for kit_info in reg.get("kits", {}).values()
+                if registry._kit_in_scope(kit_info, "project")
+                for sk in kit_info.get("skills", [])
+                if sk.get("name")
+            }
+            for kit_name, kit_info in reg.get("kits", {}).items():
+                known = kit_info.get("known_scopes") or []
+                if "global" not in known:
+                    continue  # 只有全局 kit 有"项目级覆盖"语义
+                for sk in kit_info.get("skills", []):
+                    name = sk.get("name")
+                    if not name or name not in proj_ov:
+                        continue
+                    if name in project_kit_names:
+                        continue  # 同名项目 kit 存在,覆盖归属项目 kit,不补全局条目
+                    env_ok = _env_status(sk.get("env"), sk.get("runtime"))
+                    st = _derive_state(True, proj_ov[name])
+                    result.append(SkillState(name, kit_name, "project", st, True,
+                                             env_ok,
+                                             _desc_chars(store / kit_name / name),
+                                             kit_info.get("version")))
+
     return result
 
 
 def get_state(name: str, scope: Scope = "global") -> str:
-    """返回 skill 在指定作用域的当前状态。"""
+    """返回 skill 在指定作用域的当前状态。
+
+    项目作用域下,全局 skill 可能没有项目 link,只有 settings.local.json 的
+    覆盖(off/name-only/on);此时按覆盖推导,而不是一律报 installed。
+    """
     skills_dir = _scope_skills_dir(scope)
     link_path = skills_dir / name if skills_dir else None
     has_link = bool(link_path and (link.is_link(link_path) or link.is_dangling(link_path)))
-    if not has_link:
-        return "installed"
-    ov = _read_overrides(scope).get(name)
-    return _derive_state(True, ov)
+    if has_link:
+        return _derive_state(True, _read_overrides(scope).get(name))
+    if scope == "project" and skills_dir is not None:
+        ov = _read_overrides("project").get(name)
+        if ov is not None:
+            return _derive_state(True, ov)
+    return "installed"
 
 
 _STATE_TO_OVERRIDE = {"enabled": "on", "name-only": "name-only", "off": "off"}
+
+
+def _kit_is_global(kit_name: str) -> bool:
+    """kit 是否装在全局作用域(known_scopes 含 "global")。"""
+    info = registry.get_kit(kit_name)
+    return bool(info) and "global" in (info.get("known_scopes") or [])
+
+
+def _resolve_for_project(name: str) -> tuple[str, bool]:
+    """项目作用域定位 skill 的 kit:先项目后全局。返回 (kit_name, is_global_kit)。
+
+    项目作用域装过 → 项目 kit(is_global=False);没装但全局有 → 全局 kit
+    (is_global=True);两处都没有或同名歧义 → 报错。
+    """
+    matches = registry.find_skill_matches(name, "project")
+    if len(matches) > 1:
+        kits = ", ".join(k for k, _ in matches)
+        raise CckitError(f"skill {name!r} 在多个 kit 中出现({kits}),无法唯一定位")
+    if matches:
+        return matches[0][0], False
+    gmatches = registry.find_skill_matches(name, "global")
+    if len(gmatches) > 1:
+        kits = ", ".join(k for k, _ in gmatches)
+        raise CckitError(f"skill {name!r} 在多个 kit 中出现({kits}),无法唯一定位")
+    if not gmatches:
+        raise CckitError(f"skill {name!r} 不在 registry 中(project 作用域)(不是 cckit 管理或未安装)")
+    return gmatches[0][0], True
 
 
 def set_state(name: str, state: StateName, scope: Scope = "global",
@@ -345,14 +411,36 @@ def set_state(name: str, state: StateName, scope: Scope = "global",
 
     kit 缺省时按 skill 名在 registry 里唯一查找;多个 kit 同名时报错。
     add 流程知道确切的 kit,应显式传 kit 避免同名歧义。
+
+    特例(D-15):全局 kit 的 skill 在项目作用域开关时,不建/不删项目 link ——
+    off/name-only 只写 settings.local.json 的 skillOverrides,并把项目根记入
+    override_scopes;enabled/installed 都=清掉项目覆盖、回到跟随全局(全局 skill
+    在项目里没有独立 link 可删,二者在此等价)。
     """
     if state not in ("installed", "enabled", "name-only", "off"):
         raise CckitError(f"未知状态 {state!r}")
     if kit is not None:
         kit_name = kit
+        is_global_kit = _kit_is_global(kit_name)
+    elif scope == "project":
+        kit_name, is_global_kit = _resolve_for_project(name)
     else:
-        # 按作用域定位 kit:同名 skill 全局/项目各装一份时,靠 scope 消歧。
         kit_name, _ = registry.find_skill(name, scope)
+        is_global_kit = True
+
+    if scope == "project" and is_global_kit:
+        # 全局 skill 的项目级覆盖:不碰 link,只写 settings.local.json 的
+        # skillOverrides。off/name-only 写覆盖并记入 override_scopes;
+        # enabled/installed 都表示"清掉项目覆盖、回到跟随全局"(全局 skill 在
+        # 项目里没有独立的 link 可删,enabled 与 installed 在此等价)。
+        value = _STATE_TO_OVERRIDE[state] if state in ("off", "name-only") else None
+        _write_override("project", name, value)
+        if value is not None:
+            root = config.project_root()
+            if root is not None:
+                registry.add_override_scope(kit_name, str(root))
+        return
+
     target = config.store_dir() / kit_name / name
     skills_dir = _scope_skills_dir(scope)
     if skills_dir is None:

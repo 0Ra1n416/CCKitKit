@@ -265,6 +265,7 @@ def _registry_record(source: str, ref: str | None, sha: str | None, data: dict,
         "store": str(store_target),
         "skills": skills,
         "known_scopes": [known],
+        "override_scopes": [],
     }
 
 
@@ -436,4 +437,8 @@ def remove_kit(kit: str, keep_env: bool = False) -> None:
         if scope_value == "global":
             state.remove_overrides(names, "global")
         else:
+            state.remove_overrides(names, "project", root=Path(scope_value))
+    # 清项目级覆盖残留(全局 kit 的 skill 被 --project 覆盖时记入 override_scopes)
+    for scope_value in info.get("override_scopes", []):
+        if scope_value and scope_value != "global":
             state.remove_overrides(names, "project", root=Path(scope_value))
