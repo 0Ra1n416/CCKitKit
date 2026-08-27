@@ -131,7 +131,7 @@ def test_list_all_same_name_different_scopes(tmp_path):
             "source": {"url": f"https://x/{kit}", "ref": None, "sha": None},
             "version": "1.0.0",
             "store": str(kstore),
-            "skills": [{"name": "hello", "env": None, "runtime": None, "needs": []}],
+            "skills": [{"name": "hello", "envs": {}, "needs": []}],
             "known_scopes": [scope_value]})
 
     _add_kit("globkit", "global")     # --no-enable:无 link
@@ -249,7 +249,7 @@ def test_project_override_not_misattributed_to_global_kit(tmp_path):
         "source": {"url": "https://x/projkit", "ref": None, "sha": None},
         "version": "1.0.0",
         "store": str(kstore),
-        "skills": [{"name": "foo", "env": None, "runtime": None, "needs": []}],
+        "skills": [{"name": "foo", "envs": {}, "needs": []}],
         "known_scopes": [str(root)]})
 
     proj_skills = root / ".claude" / "skills"

@@ -10,7 +10,7 @@ from helpers import install_kit_skill
 def test_budget_default_empty():
     used, limit = state.budget()
     assert used == 0
-    assert limit == 8000
+    assert limit == config.DEFAULT_BUDGET_LIMIT_CHARS
 
 
 def test_budget_counts_enabled_only():
@@ -30,7 +30,7 @@ def test_budget_fraction_scaling():
     (settings_dir / "settings.json").write_text(
         json.dumps({"skillListingBudgetFraction": 0.02}), encoding="utf-8")
     _, limit = state.budget()
-    assert limit == 16000
+    assert limit == config.DEFAULT_BUDGET_LIMIT_CHARS * 2
 
 
 def test_budget_scope_filters(tmp_path):
@@ -48,7 +48,7 @@ def test_budget_scope_filters(tmp_path):
         "source": {"url": "https://x/pkit", "ref": None, "sha": None},
         "version": "1.0.0",
         "store": str(pstore),
-        "skills": [{"name": "pfoo", "env": None, "runtime": None, "needs": []}],
+        "skills": [{"name": "pfoo", "envs": {}, "needs": []}],
         "known_scopes": [str(root)]})
     proj_skills = root / ".claude" / "skills"
     proj_skills.mkdir(parents=True)

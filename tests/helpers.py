@@ -23,7 +23,7 @@ def install_kit_skill(skill: str = "foo", runtime: str | None = None,
 
     env_dir = None
     if runtime:
-        env_dir = config.envs_dir() / f"{kit}__{skill}"
+        env_dir = config.envs_dir() / f"{kit}__{skill}__{runtime}"
         env_dir.mkdir(parents=True)
         # 造一个可执行的解释器占位(check_env 只查存在 + 可执行)
         interp = env_mod.python_interpreter(env_dir)
@@ -38,8 +38,7 @@ def install_kit_skill(skill: str = "foo", runtime: str | None = None,
         "store": str(store),
         "skills": [{
             "name": skill,
-            "env": str(env_dir) if env_dir else None,
-            "runtime": runtime,
+            "envs": {runtime: str(env_dir)} if env_dir else {},
             "needs": needs or [],
         }],
         "known_scopes": ["global"],

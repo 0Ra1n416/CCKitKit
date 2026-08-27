@@ -25,7 +25,7 @@ def test_load_missing_returns_default():
 
 def test_find_skill():
     registry.add_kit("k", {
-        "skills": [{"name": "foo", "env": None, "runtime": None, "needs": []}]})
+        "skills": [{"name": "foo", "envs": {}, "needs": []}]})
     kit, sk = registry.find_skill("foo")
     assert kit == "k"
     assert sk["name"] == "foo"
@@ -41,10 +41,10 @@ def test_find_skill_scope_disambiguates(tmp_path):
     (tmp_path / ".claude").mkdir()  # 让 project_root 找到项目根
     root = config.project_root()
     registry.add_kit("g-kit", {
-        "skills": [{"name": "hello", "env": None, "runtime": None, "needs": []}],
+        "skills": [{"name": "hello", "envs": {}, "needs": []}],
         "known_scopes": ["global"]})
     registry.add_kit("p-kit", {
-        "skills": [{"name": "hello", "env": None, "runtime": None, "needs": []}],
+        "skills": [{"name": "hello", "envs": {}, "needs": []}],
         "known_scopes": [str(root)]})
 
     assert registry.find_skill("hello", "global")[0] == "g-kit"
