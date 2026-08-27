@@ -124,7 +124,7 @@ class LintKit:
                     f"skill {sk['name']!r} description+when_to_use 共 {total} 字符,"
                     f"超过 1536 会被 CC 截断"))
             for other in self.installed_descs:
-                if TextSimilarity(desc, other).similarity() > 0.6:
+                if TextSimilarity(desc, other).similarity() > 0.9:
                     msgs.append(LintMessage(
                         "warn",
                         f"skill {sk['name']!r} 的 description 与已装 skill 语义重叠"

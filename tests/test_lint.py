@@ -62,8 +62,17 @@ def test_description_semantic_overlap_warn(tmp_path):
     _make_skill(tmp_path, "foo", desc="process video files and burn subtitles into them")
     msgs = lint.LintKit(
         tmp_path, {"skills": [{"name": "foo", "needs": []}]},
-        ["burn subtitles into video files"])._lint_descriptions()
+        ["process video files and burn subtitles into them"])._lint_descriptions()
     assert any("重叠" in m.message for m in msgs)
+
+
+def test_description_moderate_overlap_no_warn(tmp_path):
+    # 阈值 0.9:中等重叠(Jaccard 约 0.8)不应告警,只拦接近重复的 description
+    _make_skill(tmp_path, "foo", desc="process video files and burn subtitles into them")
+    msgs = lint.LintKit(
+        tmp_path, {"skills": [{"name": "foo", "needs": []}]},
+        ["burn subtitles into video files"])._lint_descriptions()
+    assert not any("重叠" in m.message for m in msgs)
 
 
 # ---- CRLF ----
