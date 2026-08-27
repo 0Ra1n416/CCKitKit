@@ -55,9 +55,7 @@ def semantic_check(data: dict, kit_dir: Path, platform: str | None = None) -> No
         raise ManifestError(f"当前平台 {platform} 不在 kit 声明的 platforms {plats} 中")
 
     # 2. needs 引用:非 python/node 的值必须声明在 requires.system[].bin
-    # 注意:requires.system[].version / version_cmd 目前仅声明、不校验(v0.1)。
-    # 系统依赖只做存在性检查(shutil.which),版本约束留待后续 —— 与 Docs/07
-    # 「系统级依赖只检查存在性 + 给 hint,绝不自动安装」保持一致。
+    # 注意:requires.system[].version / version_cmd 校验在 installer.py 的 compute_plan() 的 _check_system_version() 里做,这里不重复做
     requires = data.get("requires") or {}
     system_bins = {d.get("bin") for d in (requires.get("system") or [])}
     for sk in data.get("skills", []):

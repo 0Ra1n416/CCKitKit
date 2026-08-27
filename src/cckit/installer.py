@@ -8,19 +8,25 @@ add:clone → 锁 commit sha → 校验 manifest → lint → 展示计划等确
   - 锁 commit sha,不锁分支/tag
   - 安装前展示计划并等确认(-y 跳过,文档需警示)
   - postinstall 只允许操作 kit 自己的目录(靠声明+审查+文档,不强制沙箱)
-  - 系统级依赖只检查存在性 + 给当前平台 hint,绝不自动安装
+  - 系统级依赖只检查存在性 + 版本约束比对 + 给当前平台 hint,绝不自动安装;
+    version_cmd 收紧为 `<bin> <版本标志>` 白名单,拒绝任意命令执行
 """
 from __future__ import annotations
 
 import datetime
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion
 
 from . import config, env as env_mod, lint, link, manifest, registry, state
 from .errors import CckitError
@@ -43,6 +49,8 @@ class Plan:
     node_packages: list[str] = field(default_factory=list)
     postinstall: list[dict] = field(default_factory=list)
     system_missing: list[dict] = field(default_factory=list)
+    system_version_warn: list[dict] = field(default_factory=list)
+    system_version_error: list[dict] = field(default_factory=list)
     skills: list[dict] = field(default_factory=list)
 
 
@@ -95,6 +103,82 @@ def _read_package_deps(path: Path | None) -> list[str]:
     deps.update(pkg.get("devDependencies") or {})
     return [f"{k}@{v}" for k, v in deps.items()]
 
+# ---- 系统依赖版本约束 ----
+
+_VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
+_ALLOWED_VERSION_FLAGS = frozenset({"--version", "-V", "-v", "version", "-version"})
+
+
+def _unsafe_version_cmd(argv: list[str], bin_name: str) -> str | None:
+    """校验 version_cmd 是否落在白名单内,返回不安全原因;None = 安全可执行。
+
+    白名单只允许 `<bin> <版本标志>`:第一个词必须等于 bin,后跟且仅跟一个
+    版本标志。其余(多余参数、其它标志、别的二进制)一律拒绝 —— 作者写的
+    version_cmd 会在用户确认安装之前就执行,必须收紧到"只读的版本查询"。
+    """
+    if not argv:
+        return "命令为空"
+    if argv[0] != bin_name:
+        return f"命令 {argv[0]!r} 不是依赖 {bin_name!r} 本身"
+    if len(argv) != 2:
+        return f"参数个数必须恰为 2(<bin> <版本标志>),实际 {len(argv)}"
+    if argv[1] not in _ALLOWED_VERSION_FLAGS:
+        return f"版本标志 {argv[1]!r} 不在白名单 {sorted(_ALLOWED_VERSION_FLAGS)!r}"
+    return None
+
+
+def _version_satisfies(installed: str, constraint: str) -> bool:
+    """按约束判断已装版本是否满足(基于 PEP 440 的 SpecifierSet)。"""
+    try:
+        return SpecifierSet(constraint).contains(installed)
+    except (InvalidSpecifier, InvalidVersion) as e:
+        raise ValueError(f"无法解析版本约束 {constraint!r}: {e}") from e
+
+
+def _check_system_version(dep: dict) -> tuple[str | None, str]:
+    """检查单个 system 依赖的版本约束,返回 (级别, 消息)。
+
+    - 未声明 version → (None, ""),跳过。
+    - 版本满足 → (None, "")。
+    - 版本不满足 → ("error", 消息)。
+    - 无法运行/解析版本,或 version_cmd 被白名单拒绝 → ("warn", 消息)。
+    """
+    constraint = dep.get("version")
+    if not constraint:
+        return None, ""
+    bin_name = dep["bin"]
+    version_cmd = dep.get("version_cmd") or f"{bin_name} --version"
+    try:
+        argv = shlex.split(version_cmd)
+    except ValueError as e:
+        return "warn", f"version_cmd 无法解析: {e}(要求 {constraint})"
+    reason = _unsafe_version_cmd(argv, bin_name)
+    if reason is not None:
+        return "warn", (
+            f"version_cmd {version_cmd!r} 被拒绝({reason});"
+            f"为安全起见仅允许 <bin> 后跟一个版本标志,请手动验证版本(要求 {constraint})"
+        )
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+    except (OSError, ValueError) as e:
+        return "warn", f"无法运行版本检查命令 {version_cmd!r}: {e}"
+    except subprocess.TimeoutExpired:
+        return "warn", f"版本检查命令 {version_cmd!r} 超时,无法验证版本(要求 {constraint})"
+
+    output = (proc.stdout + "\n" + proc.stderr).strip()
+    m = _VERSION_RE.search(output) if output else None
+    if m is not None:
+        try:
+            if _version_satisfies(m.group(0), constraint):
+                return None, ""
+        except ValueError as e:
+            return "warn", str(e)
+    if proc.returncode != 0:
+        return "warn", f"版本检查命令 {version_cmd!r} 失败(exit {proc.returncode}),无法验证版本(要求 {constraint})"
+    if m is None:
+        return "warn", f"无法从 {version_cmd!r} 的输出解析版本(要求 {constraint})"
+    return "error", f"版本不满足:要求 {constraint},当前 {m.group(0)}"
+
 
 def compute_plan(source: str, ref: str | None, sha: str | None,
                  data: dict, kit_dir: Path) -> Plan:
@@ -117,6 +201,12 @@ def compute_plan(source: str, ref: str | None, sha: str | None,
                 "bin": dep["bin"],
                 "hint": (dep.get("hint") or {}).get(platform),
             })
+            continue
+        level, msg = _check_system_version(dep)
+        if level == "error":
+            plan.system_version_error.append({"bin": dep["bin"], "detail": msg})
+        elif level == "warn":
+            plan.system_version_warn.append({"bin": dep["bin"], "detail": msg})
     return plan
 
 
@@ -153,6 +243,16 @@ def render_plan(plan: Plan) -> str:
         lines.append("缺失的系统依赖(只提示,不自动装):")
         for d in plan.system_missing:
             lines.append(f"  - {d['bin']}  →  {d.get('hint') or '(无 hint)'}")
+    if plan.system_version_warn:
+        lines.append("")
+        lines.append("系统依赖版本无法验证:")
+        for d in plan.system_version_warn:
+            lines.append(f"  - {d['bin']}  →  {d.get('detail', '')}")
+    if plan.system_version_error:
+        lines.append("")
+        lines.append("系统依赖版本不满足(该 skill 可能无法正常工作):")
+        for d in plan.system_version_error:
+            lines.append(f"  - {d['bin']}  →  {d.get('detail', '')}")
     lines.append("")
     lines.append("⚠️  安装一个 kit 等同于在本机运行该仓库作者的代码。请只安装你信任的来源。")
     return "\n".join(lines)

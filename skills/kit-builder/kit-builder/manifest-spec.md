@@ -79,6 +79,16 @@ postinstall:
 | `version` | | 版本约束。需配 `version_cmd` |
 | `version_cmd` | | 取版本的命令,缺省 `<bin> --version` |
 
+`version` 声明后,`cckit add` 会用 `version_cmd`(缺省 `<bin> --version`)实测版本并按
+PEP 440 约束(如 `>=6.0`、`~=6.0`、`==6.*`,逗号分隔为 AND)比对;不满足或无法验证会
+列入安装计划提示,不阻断安装。
+
+⚠️ 安全约束:`version_cmd` 只允许只读的版本查询,形如 `<bin> <版本标志>` ——
+`<bin>` 必须与 `bin` 字段一致,`<版本标志>` 仅限 `--version` / `-V` / `-v` /
+`version` / `-version`。任何其它命令(多参数、别的标志、别的二进制、管道/重定向)
+一律拒绝:**不执行**,改为报 warn 让你手动核对版本。这是因为 version_cmd 会在用户
+确认安装前就运行,必须堵住"作者塞任意命令"的口子。
+
 ⚠️ `hint` 写成单个字符串会被 lint 拒绝。
 
 ### `skills[]`

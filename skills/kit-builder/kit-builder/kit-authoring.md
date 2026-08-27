@@ -138,7 +138,12 @@ requires:
 ```
 
 - **`system` 声明系统二进制。** 这一项的语义是"安装前检查在不在 PATH,不在就报缺失并
-  给出**当前平台**的 hint",**永远不会自动 `sudo apt install`**。这是硬性安全要求,别指望 cckit 帮你装系统级工具。
+  给出**当前平台**的 hint";若声明了 `version`,还会用 `version_cmd`(缺省 `<bin> --version`)
+  实测版本并比对,不满足或无法验证会列入安装计划提示。**永远不会自动 `sudo apt install`**。
+  这是硬性安全要求,别指望 cckit 帮你装系统级工具。
+- **`version_cmd` 有白名单。** 只允许 `<bin> <版本标志>`(`--version` / `-V` / `-v` /
+  `version` / `-version`),`<bin>` 必须等于 `bin` 字段。其它任何命令一律拒绝并报 warn,
+  让你手动核对——因为 version_cmd 会在你确认安装前就执行。
 - **`hint` 必须是分平台 map**,不能写成一个字符串。写成 `hint: winget install ffmpeg`
   这种单个字符串是 Windows-only 错误,lint 直接拒。**至少覆盖你在 `platforms` 声明的
   每个平台。**
