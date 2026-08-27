@@ -1,0 +1,104 @@
+"""registry.json 的读写。
+
+registry 只存"从文件系统观测不出来"的东西:kit 来源(URL/ref/sha)、版本、
+env 路径、runtime、known_scopes。启用状态是派生的,不写这里(见 state.py)。
+写入必须原子(临时文件 + os.replace),避免半截 JSON。
+"""
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from pathlib import Path
+
+from . import config
+from .errors import CckitError
+
+
+def load() -> dict:
+    """读 registry;不存在时返回空结构;损坏时抛受检 CckitError(不静默、不裸 traceback)。"""
+    path = config.registry_path()
+    if not path.exists():
+        return {"version": 1, "kits": {}}
+    with open(path, encoding="utf-8") as f:
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise CckitError(f"registry.json 不是合法 JSON,已损坏: {e}") from e
+    if not isinstance(data, dict) or not isinstance(data.get("kits"), dict):
+        raise CckitError(f"registry.json 结构损坏: {path}")
+    data.setdefault("version", 1)
+    return data
+
+
+def save(data: dict) -> None:
+    """原子写:临时文件 + os.replace。"""
+    path = config.registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".registry-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def get_kit(name: str) -> dict | None:
+    """按 kit 名取记录,不存在返回 None。"""
+    return load().get("kits", {}).get(name)
+
+
+def add_kit(name: str, info: dict) -> None:
+    """新增或覆盖一个 kit 记录。"""
+    data = load()
+    data.setdefault("kits", {})[name] = info
+    save(data)
+
+
+def remove_kit(name: str) -> dict | None:
+    """删除一个 kit 记录,返回被删内容(不存在返回 None)。"""
+    data = load()
+    info = data.get("kits", {}).pop(name, None)
+    if info is not None:
+        save(data)
+    return info
+
+
+def _kit_in_scope(info: dict, scope: str) -> bool:
+    """kit 的 known_scopes 是否包含给定作用域。
+
+    project 作用域按当前项目根路径比对(与 installer 写 known_scopes 时一致)。
+    """
+    scopes = info.get("known_scopes") or []
+    if scope == "global":
+        return "global" in scopes
+    root = config.project_root()
+    return root is not None and str(root) in scopes
+
+
+def find_skill(name: str, scope: str | None = None) -> tuple[str, dict]:
+    """按 skill 名查找,要求唯一;0 或 >1 都报错。
+
+    scope 给定时("global"/"project")只在对应作用域内找 —— 同名 skill
+    全局与项目各装一份时,靠作用域即可唯一定位(见 Docs/04:所有命令默认
+    全局,`--project` 作用项目)。scope=None 时在全部 kit 里找。
+    """
+    matches: list[tuple[str, dict]] = []
+    for kit, info in load().get("kits", {}).items():
+        if scope is not None and not _kit_in_scope(info, scope):
+            continue
+        for sk in info.get("skills", []):
+            if sk.get("name") == name:
+                matches.append((kit, sk))
+    if not matches:
+        where = f"({scope} 作用域)" if scope else ""
+        raise CckitError(f"skill {name!r} 不在 registry 中{where}(不是 cckit 管理或未安装)")
+    if len(matches) > 1:
+        kits = ", ".join(k for k, _ in matches)
+        raise CckitError(f"skill {name!r} 在多个 kit 中出现({kits}),无法唯一定位")
+    return matches[0]
