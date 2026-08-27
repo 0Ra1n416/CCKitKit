@@ -1,6 +1,6 @@
 # kit-builder 模板。复制后把 <...> 占位符替换成真实值,再删掉本注释。
 #
-# 字段规范见 Docs/03-manifest-spec.md;改造步骤见 Docs/10-kit-authoring.md。
+# 字段规范见 ../manifest-spec.md;改造步骤见 ../kit-authoring.md。
 
 cckit: 1
 

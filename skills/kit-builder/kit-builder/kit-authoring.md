@@ -324,9 +324,8 @@ Linux(WSL 即可)上跑一遍 `cckit add`,重点看:
 
 ## 8. 完整示例
 
-参考 kit:[`examples/video-toolkit/`](examples/video-toolkit/)(也是测试夹具)。
-它覆盖了系统依赖、Python 依赖、env、带脚本 skill + 纯 prompt skill、postinstall,
-对照本文可看清每个字段的落位。
+参考 kit:cckit 仓库的 `Docs/examples/video-toolkit/`(带系统依赖、Python 依赖、env、
+带脚本 + 纯 prompt skill、postinstall;同时是测试夹具)。
 
 ## 9. 常见错误清单
 

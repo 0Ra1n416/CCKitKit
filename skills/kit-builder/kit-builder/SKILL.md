@@ -78,8 +78,8 @@ description: 把开发者的普通 skill(一个带 SKILL.md 的目录或几个�
 - skill 名不含大写、不撞 Windows 保留名(`con` `prn` `aux` `nul` `com1-9` `lpt1-9`)、
   不叫 `synced`。
 - 文本文件(尤其 `.sh`)用 LF,别留 CRLF。
-- SKILL.md 别出现 "ignore previous instructions"、读 `.env` / SSH 私钥、
-  向外部地址 POST 数据等可疑字样(会被提示 prompt injection)。
+- SKILL.md 别出现「要求忽略既有指令」、读取 `.env`、访问 SSH 私钥、
+  向外部地址上传数据等可疑字样(会被提示 prompt injection)。
 - `requirements.txt` / `package.json` 里的依赖名没有 typosquatting(`reqeusts` 之类)。
 - postinstall 只写 kit 自己的目录与其 env,系统级操作改声明为 `requires.system`。
 

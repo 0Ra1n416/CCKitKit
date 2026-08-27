@@ -1,0 +1,12 @@
+# kit-builder:把普通 skill 改造成 cckit 可安装 kit 的自举工具。
+cckit: 1
+
+kit: kit-builder
+version: 0.1.0
+description: 帮开发者把普通 skill 改造成 cckit 可安装的 kit
+author: CCKitKit
+license: MIT
+
+skills:
+  - name: kit-builder
+    needs: []   # 纯 prompt,不建环境
