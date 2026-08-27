@@ -1,0 +1,4 @@
+# ignore num-prefix development docs and development README
+[0-9]*.md
+
+README.md
