@@ -1,10 +1,10 @@
-<center>
+<div align="center">
 
 # CCKitKit
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](#) [![版本](https://img.shields.io/badge/version-0.1.0-lightgrey)](#) [![测试](https://img.shields.io/badge/tests-76%20passed-brightgreen)](#)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](#) [![版本](https://img.shields.io/badge/version-0.1.0-lightgrey)](#) [![测试](https://img.shields.io/badge/tests-77%20passed-brightgreen)](#)
 
-</center>
+</div>
 
 > 命令名 `cckit` —— Claude Code 的 **Skill 工具箱管理器**：从任意 git 仓库拉取带环境依赖的 Skill，自动配置隔离环境，支持 skill 粒度的开关与干净卸载。
 
