@@ -181,6 +181,9 @@ skills:
 引用了未在 `system` 声明的名字 → lint 报错。**声明 `needs: [python]` 但 `requires` 里
 没写 `python.file`,会拿到一个空的 venv**,这是合法但通常不是你想要的。
 
+`python` 与 `node` **可以同时声明**(`needs: [python, node]`):各建一个独立 env,
+`cckit exec` 按脚本扩展名选解释器 —— 一个 skill 只在脚本真正用到某种 runtime 时才需要它。
+
 `scripts[]` 必须**真实存在**(相对 skill 目录),否则语义检查报错。它同时也是
 `cckit exec` 的执行白名单 —— 不在列表里的脚本路径会被拒绝。
 

@@ -92,6 +92,10 @@ postinstall:
 `needs` 的取值:`python` / `node` 触发对应环境安装;其余值视为
 `requires.system[].bin` 的引用,只做存在性检查。引用了未声明的名字 → lint 报错。
 
+一个 skill **可同时**声明 `python` 与 `node`(如 `needs: [python, node]`):
+两者各自建独立 env,互不干扰;`cckit exec` 按脚本扩展名自动选解释器
+(`.py` → python、`.js` / `.mjs` → node)。
+
 ### `postinstall[]`
 
 | 字段 | 必填 | 说明 |
