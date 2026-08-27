@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CCKitKit/schema/cckit.schema.json",
+  "title": "cckit.yaml",
+  "description": "CCKitKit kit manifest. 详见 Docs/03-manifest-spec.md",
+  "type": "object",
+  "required": ["cckit", "kit", "version", "description", "skills"],
+  "additionalProperties": false,
+  "properties": {
+    "cckit": { "const": 1, "description": "manifest 格式版本" },
+    "kit": { "$ref": "#/$defs/slug" },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)*$"
+    },
+    "description": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "author": { "type": "string" },
+    "homepage": { "type": "string", "format": "uri" },
+    "license": { "type": "string" },
+    "platforms": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": ["windows", "linux", "macos"] },
+      "description": "缺省视为全平台支持"
+    },
+    "requires": { "$ref": "#/$defs/requires" },
+    "env": { "type": "array", "items": { "$ref": "#/$defs/envVar" } },
+    "skills": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/skill" }
+    },
+    "postinstall": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/postinstallStep" }
+    }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "maxLength": 64,
+      "description": "小写 kebab-case。大写会导致 Linux/Windows 行为分裂"
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "python": { "type": "string", "description": "PEP 440 约束,如 >=3.11" },
+            "node": { "type": "string", "description": "semver 约束,如 >=20" }
+          }
+        },
+        "system": { "type": "array", "items": { "$ref": "#/$defs/systemDep" } },
+        "python": { "$ref": "#/$defs/depFile" },
+        "node": { "$ref": "#/$defs/depFile" }
+      }
+    },
+    "depFile": {
+      "type": "object",
+      "required": ["file"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "相对 kit 根的标准依赖文件,如 requirements.txt"
+        }
+      }
+    },
+    "systemDep": {
+      "type": "object",
+      "required": ["bin", "hint"],
+      "additionalProperties": false,
+      "properties": {
+        "bin": { "type": "string", "minLength": 1 },
+        "hint": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "description": "必须是分平台 map。单字符串是 Windows-only 错误,见 D-08",
+          "properties": {
+            "windows": { "type": "string" },
+            "linux": { "type": "string" },
+            "macos": { "type": "string" }
+          }
+        },
+        "version": { "type": "string" },
+        "version_cmd": { "type": "string" }
+      }
+    },
+    "envVar": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "required": { "type": "boolean", "default": false },
+        "description": { "type": "string" }
+      }
+    },
+    "skill": {
+      "type": "object",
+      "required": ["name", "needs"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "allOf": [{ "$ref": "#/$defs/slug" }],
+          "description": "必须与 skill 目录名完全一致。保留名由 lint 另行拒绝"
+        },
+        "needs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string" },
+          "description": "python/node 触发环境安装;其余值须为 requires.system[].bin"
+        },
+        "scripts": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "postinstallStep": {
+      "type": "object",
+      "required": ["run"],
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "type": "string",
+          "description": "相对 kit 根。只允许操作 kit 自身目录与其 env"
+        },
+        "when": { "enum": ["always", "python", "node"], "default": "always" }
+      }
+    }
+  }
+}

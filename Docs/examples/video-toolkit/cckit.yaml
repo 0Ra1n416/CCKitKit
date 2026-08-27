@@ -1,0 +1,44 @@
+# 参考 kit。既是文档示例,也是测试夹具(tests 应校验它通过 schema)。
+cckit: 1
+
+kit: video-toolkit
+version: 1.2.0
+description: 视频处理工具集,含字幕烧制与内容描述
+author: someone
+homepage: https://github.com/someone/video-toolkit
+license: MIT
+
+platforms: [windows, linux, macos]
+
+requires:
+  runtime:
+    python: ">=3.11"          # uv 按此拉取,用户无需预装
+  system:
+    - bin: ffmpeg
+      hint:                   # 必须分平台
+        windows: winget install ffmpeg
+        linux: sudo apt install ffmpeg
+        macos: brew install ffmpeg
+      version: ">=6.0"
+      version_cmd: ffmpeg -version
+  python:
+    file: requirements.txt
+
+env:
+  - name: OPENAI_API_KEY
+    required: false
+    description: 用于 describe-video 的字幕润色;不填则跳过该步骤
+
+skills:
+  # 带脚本 + 系统依赖:装它会建 venv 并检查 ffmpeg
+  - name: burn-subtitles
+    needs: [ffmpeg, python]
+    scripts: [scripts/burn.py]
+
+  # 纯 prompt:needs 为空,装它不触发任何环境安装
+  - name: describe-video
+    needs: []
+
+postinstall:
+  - run: scripts/setup.py       # 只允许操作本 kit 目录
+    when: python

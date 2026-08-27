@@ -1,0 +1,22 @@
+[project]
+name = "cckit"
+version = "0.1.0"
+description = "Claude Code 的 Skill 工具箱管理器"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",
+    "jsonschema>=4.20",
+]
+
+[project.scripts]
+cckit = "cckit.cli:main"          # 装完后 `cckit` 命令指向这里
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cckit"]          # 显式声明 src layout
+
+[dependency-groups]
+dev = ["pytest>=8"]               # uv sync 默认装上,供 `uv run pytest`
