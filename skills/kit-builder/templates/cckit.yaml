@@ -1,0 +1,48 @@
+# kit-builder 模板。复制后把 <...> 占位符替换成真实值,再删掉本注释。
+#
+# 字段规范见 Docs/03-manifest-spec.md;改造步骤见 Docs/10-kit-authoring.md。
+
+cckit: 1
+
+kit: <kit-name>                # 小写 kebab-case,如 video-toolkit
+version: 0.1.0                 # 语义化版本
+description: <一句话说明这个 kit 做什么>
+author: <作者>
+homepage: <仓库地址>
+license: <MIT 等>
+
+# 支持的平台。缺省视为全平台。当前平台不在列表内时,add 直接拒绝。
+platforms: [windows, linux, macos]
+
+requires:
+  runtime:
+    python: ">=3.11"           # uv 按此拉取,用户无需预装。没有 Python 依赖就删掉本段
+    # node: ">=20"
+  system:                      # 系统二进制:只检查存在性 + 给 hint,绝不自动装
+    - bin: <如 ffmpeg>
+      hint:                    # 必须分平台 map,不能写单个字符串
+        windows: <winget install ...>
+        linux: <sudo apt install ...>
+        macos: <brew install ...>
+      # version: ">=6.0"
+      # version_cmd: <bin> --version
+  python:
+    file: requirements.txt     # 复用标准文件;没有 Python 依赖就删掉本段
+  # node:
+  #   file: package.json
+
+# 需要用户提供的环境变量。cckit exec 时注入,缺失且 required 时报错。
+env:
+  - name: <如 OPENAI_API_KEY>
+    required: false
+    description: <用途;不填则跳过哪一步>
+
+skills:
+  - name: <skill-name>         # 必须与 skill 目录名逐字符一致
+    needs: []                  # 纯 prompt 留 [];有依赖写 [python] / [node] / [<system bin>]
+    scripts: [scripts/<run.py>]  # 可选;相对 skill 目录,必须真实存在
+
+# postinstall(可选):只允许写 kit 自己的目录与其 env 目录。
+# postinstall:
+#   - run: scripts/setup.py    # 相对 kit 根
+#     when: always             # always(默认) / python / node
