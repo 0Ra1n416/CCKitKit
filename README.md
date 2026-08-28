@@ -2,7 +2,7 @@
 
 # CCKitKit
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](#) [![版本](https://img.shields.io/badge/version-0.1.1-lightgrey)](#) [![测试](https://img.shields.io/badge/tests-82%20passed-brightgreen)](#)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](#) [![版本](https://img.shields.io/badge/version-0.2.0-lightgrey)](#) [![测试](https://img.shields.io/badge/tests-82%20passed-brightgreen)](#)
 
 </div>
 
@@ -61,7 +61,47 @@ cckit doctor --fix           # 只修明确安全的项
 cckit exec my-skill scripts/run.py [args...]
 ```
 
-共 **8 个命令**：`add` / `list` / `enable` / `disable` / `name-only` / `remove` / `doctor` / `exec`。完整规格见 [Docs/cli-spec.md](Docs/cli-spec.md)。
+共 **9 个命令**：`add` / `list` / `enable` / `disable` / `name-only` / `remove` / `doctor` / `exec` / `web`。完整规格见 [Docs/cli-spec.md](Docs/cli-spec.md)。
+
+## Web 管理面板
+
+cckit 附带一个可选的管理面板（列表 / 导入 / 卸载 / 状态切换 / 诊断）。它是**纯增量**：不装 `[web]` 额外依赖时，`cckit` 本体与现在完全一样，`uv tool install cckit` 也不会带入任何 web 依赖。
+
+### 启用
+
+**普通用户**（前端已随 wheel 打包，一条命令即用）：
+
+```bash
+uv tool install 'cckit[web]'   # 带后端依赖 + 前端静态产物
+cckit web                       # 前后端一起起，打开 http://127.0.0.1:8000 即用
+```
+
+**开发者**（源码仓库里改前端）：
+
+```bash
+cd web && npm install && npm run build   # 产出 web/dist/，uv build 时打进 wheel
+cckit web                                 # 自动定位前端(包内 static → 源码 web/dist)
+
+# 开发调试：前端单独起 vite dev(自带 /api 代理)
+cckit web                # 后端(不托管前端)
+cd web && npm run dev    # 前端 dev server(:5173)，代理 /api 到 :8000
+```
+
+前端是 Vite + React + shadcn/ui，静态产物由后端托管。
+
+### 功能
+
+- **左侧作用域**：全局 + 装过 kit 的项目 + 手动「关注」的项目（即使暂无 skill 也显示，并自动建 `.claude`）。
+- **右侧 kit 列表**：kit 可收起/展开、卸载；每个 skill 带四态开关（installed / enabled / name-only / off），`name-only` 附解释。
+- **添加 Kit**：填仓库地址或本地路径 → 展示安装计划（依赖 / postinstall / 系统依赖 / 来源+sha）等确认 → 实时日志。
+- **诊断**：勾选 `--fix` 自动修复明确安全的项，下方展示逐项结果。
+- **刷新**：顶栏手动刷新 + 写操作后自动刷新；所有开关改动提示「新会话生效」。
+
+### 安全与部署
+
+- 后端**默认只绑 `127.0.0.1`**。要作为服务器面板被浏览器访问时，用 `cckit web --host 0.0.0.0`。
+  ⚠️ 放开即把「能装 kit（跑作者代码）、能改 skill 状态」的能力暴露给网段，请只在可信内网使用，必要时在反向代理层加鉴权。
+- 嵌入其他页面用 **iframe**：后端托管前端后，宿主页 `<iframe src="http://<server>:<port>/">` 即可（同源隔离，无 CORS 问题）。
 
 ## 特色
 
@@ -168,11 +208,11 @@ uv run cckit --help     # 直接跑，无需安装
 uv tool install --editable .   # 本机可编辑安装
 ```
 
-代码结构（`src/cckit/`，16 个文件）：
+代码结构（`src/cckit/`，18 个文件，含 `web/` 子包）：
 
 | 模块 | 职责 |
 |---|---|
-| `cli.py` | argparse 分发到 8 个子命令 |
+| `cli.py` | argparse 分发到 9 个子命令 |
 | `installer.py` | `add` 全流程：锁 sha → 校验 → lint → 计划确认 → store/env/postinstall/registry/link |
 | `manifest.py` | `cckit.yaml` 加载 + schema 校验 + 语义检查 |
 | `schema.py` | JSON Schema 加载器（Draft 2020-12） |
@@ -185,3 +225,5 @@ uv tool install --editable .   # 本机可编辑安装
 | `doctor.py` | 只读诊断 + 安全修复 |
 | `config.py` | 路径与平台解析（`CCKIT_HOME` / `CLAUDE_CONFIG_DIR` / 项目根） |
 | `errors.py` | 受检错误 `CckitError` |
+| `projects.py` | 关注项目清单 `projects.json` 原子读写 |
+| `web/` | Web 管理面板后端（FastAPI，惰性 import，`[web]` 可选依赖） |

@@ -1,6 +1,6 @@
 [project]
 name = "cckit"
-version = "0.1.1"
+version = "0.2.0"
 description = "Claude Code 的 Skill 工具箱管理器"
 requires-python = ">=3.12"
 dependencies = [
@@ -8,6 +8,9 @@ dependencies = [
     "jsonschema>=4.20",
     "packaging>=24.0",
 ]
+
+[project.optional-dependencies]
+web = ["fastapi>=0.115", "uvicorn>=0.30"]
 
 [project.scripts]
 cckit = "cckit.cli:main"          # 装完后 `cckit` 命令指向这里
@@ -18,6 +21,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cckit"]          # 显式声明 src layout
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"           # 条件打包前端产物(web/dist 存在才打进 wheel)
 
 [dependency-groups]
 dev = ["pytest>=8"]               # uv sync 默认装上,供 `uv run pytest`
