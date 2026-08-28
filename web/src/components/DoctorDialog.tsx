@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { AlertTriangle, CheckCircle2, Wrench } from "lucide-react"
+import { CheckCircle, Warning, Wrench } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -15,10 +15,10 @@ import { useSSE } from "@/hooks/useSSE"
 
 function StatusIcon({ status }: { status: Finding["status"] }) {
   if (status === "error")
-    return <AlertTriangle className="h-4 w-4 shrink-0 text-destructive" />
+    return <Warning className="h-4 w-4 shrink-0 text-destructive" />
   if (status === "warn")
-    return <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
-  return <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />
+    return <Warning className="h-4 w-4 shrink-0 text-amber-400" />
+  return <CheckCircle className="h-4 w-4 shrink-0 text-primary" />
 }
 
 export function DoctorDialog({

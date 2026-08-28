@@ -18,6 +18,9 @@ export interface SkillItem {
   env_ok: boolean | null
   desc_chars: number
   version: string | null
+  is_global_skill: boolean
+  global_state: string | null
+  override: boolean
 }
 
 export interface Budget {

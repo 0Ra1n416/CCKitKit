@@ -40,6 +40,9 @@ class SkillState:
     env_ok: bool | None             # None = 该 skill 无需 env
     desc_chars: int                 # 用于预算统计
     version: str | None
+    is_global_skill: bool = False   # project 作用域下,此条目是「全局 skill 的项目覆盖/跟随」
+    global_state: str | None = None # 全局 skill 在全局作用域的状态(供项目覆盖决策)
+    override: bool = False          # 全局 skill 是否带项目级覆盖(off/name-only)
 
 
 @dataclass
@@ -331,37 +334,45 @@ def list_skills(scope: Scope | None = None, root: Path | None = None) -> list[Sk
                                          env_ok, _desc_chars(store / kit_name / name),
                                          kit_info.get("version")))
 
-    # 全局 kit 的 skill 带项目级覆盖(off/name-only/on)时,项目作用域也要列出
-    # 它 —— 即便项目里没有 link。这是 D-15 的"全局 skill 按项目覆盖"读回路径。
+    # 全局 kit 的 skill 在项目作用域:列出所有全局 skill(D-15)。
+    # 有效状态 = 项目级覆盖(off/name-only)若有;否则跟随全局状态。
     # 注意:project skill 若有同名全局 skill,覆盖是写给项目 kit 的(见 set_state
     # 的定位顺序),不能误归属到全局 kit。故这里只对"项目作用域无同名 kit"的
     # 全局 skill 补项目级条目。
     if (scope is None or scope == "project") and proj_root is not None:
         proj_ov = _read_overrides("project", root)
-        if proj_ov:
-            project_kit_names = {
-                sk.get("name")
-                for kit_info in reg.get("kits", {}).values()
-                if registry._kit_in_scope(kit_info, "project", root)
-                for sk in kit_info.get("skills", [])
-                if sk.get("name")
-            }
-            for kit_name, kit_info in reg.get("kits", {}).items():
-                known = kit_info.get("known_scopes") or []
-                if "global" not in known:
-                    continue  # 只有全局 kit 有"项目级覆盖"语义
-                for sk in kit_info.get("skills", []):
-                    name = sk.get("name")
-                    if not name or name not in proj_ov:
-                        continue
-                    if name in project_kit_names:
-                        continue  # 同名项目 kit 存在,覆盖归属项目 kit,不补全局条目
-                    env_ok = _env_status(sk.get("envs") or {})
+        project_kit_names = {
+            sk.get("name")
+            for kit_info in reg.get("kits", {}).values()
+            if registry._kit_in_scope(kit_info, "project", root)
+            for sk in kit_info.get("skills", [])
+            if sk.get("name")
+        }
+        for kit_name, kit_info in reg.get("kits", {}).items():
+            known = kit_info.get("known_scopes") or []
+            if "global" not in known:
+                continue  # 只有全局 kit 有"项目级覆盖"语义
+            for sk in kit_info.get("skills", []):
+                name = sk.get("name")
+                if not name:
+                    continue
+                if name in project_kit_names:
+                    continue  # 同名项目 kit 存在,覆盖归属项目 kit,不补全局条目
+                env_ok = _env_status(sk.get("envs") or {})
+                global_state = get_state(name, "global")
+                if name in proj_ov:
                     st = _derive_state(True, proj_ov[name])
                     result.append(SkillState(name, kit_name, "project", st, True,
                                              env_ok,
                                              _desc_chars(store / kit_name / name),
-                                             kit_info.get("version")))
+                                             kit_info.get("version"), True,
+                                             global_state, True))
+                else:
+                    result.append(SkillState(name, kit_name, "project", global_state,
+                                             True, env_ok,
+                                             _desc_chars(store / kit_name / name),
+                                             kit_info.get("version"), True,
+                                             global_state, False))
 
     return result
 
@@ -512,7 +523,11 @@ def budget(scope: Scope | None = None, root: Path | None = None) -> tuple[int, i
     只统计 enabled 态的 skill —— name-only / off / installed 的 description
     不进上下文,不占预算。
     """
-    used = sum(s.desc_chars for s in list_skills(scope, root) if s.state == "enabled")
+    used = sum(
+        s.desc_chars
+        for s in list_skills(scope, root)
+        if s.state == "enabled" and not s.is_global_skill
+    )
     settings = read_settings("global")
     fraction = settings.get("skillListingBudgetFraction", _BUDGET_FRACTION_DEFAULT)
     try:

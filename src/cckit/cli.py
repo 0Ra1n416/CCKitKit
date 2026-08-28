@@ -13,6 +13,7 @@ from . import doctor, exec as exec_mod, installer, state
 from .errors import CckitError
 
 _SYMBOLS = {"installed": "·", "enabled": "●", "name-only": "◐", "off": "○"}  # 状态图标预定义
+_STATE_LABELS = {"installed": "已安装", "enabled": "已启用", "name-only": "仅名字", "off": "已关闭"}
 
 
 def _scope(args) -> str:
@@ -87,6 +88,9 @@ def _as_dict(s: state.SkillState) -> dict:
         "env_ok": s.env_ok,
         "desc_chars": s.desc_chars,
         "version": s.version,
+        "is_global_skill": s.is_global_skill,
+        "global_state": s.global_state,
+        "override": s.override,
     }
 
 
@@ -111,7 +115,14 @@ def _print_list(skills: list[state.SkillState]) -> None:
             env = _env_label(s)
             scope_tag = "  [project]" if s.scope == "project" else ""
             ro_tag = "  [只读]" if not s.managed else ""
-            print(f"  {_SYMBOLS[s.state]} {s.name:<20} {s.state:<10} {env}"
+            if s.is_global_skill:
+                if s.override:
+                    state_str = f"项目覆盖 {_STATE_LABELS.get(s.state, s.state)}"
+                else:
+                    state_str = f"跟随全局 {_STATE_LABELS.get(s.global_state or '', s.global_state or '?')}"
+            else:
+                state_str = s.state
+            print(f"  {_SYMBOLS[s.state]} {s.name:<20} {state_str:<16} {env}"
                   f"{scope_tag}{ro_tag}")
 
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { AlertTriangle, Check, Loader2, ShieldAlert } from "lucide-react"
+import { Check, CircleNotch, ShieldWarning, Warning } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -13,7 +13,7 @@ import {
 import { cn } from "@/lib/utils"
 import { api, type LintMsg, type Plan } from "@/lib/api"
 import { useSSE } from "@/hooks/useSSE"
-import type { ActiveScope } from "./ScopeSidebar"
+import type { ActiveScope } from "./AppSidebar"
 
 interface PreviewResult {
   preview_id: string
@@ -207,7 +207,7 @@ export function AddKitDialog({
                 取消
               </Button>
               <Button onClick={doPreview} disabled={!source.trim() || busy}>
-                {busy && <Loader2 className="animate-spin" />} 下一步
+                {busy && <CircleNotch className="animate-spin" />} 下一步
               </Button>
             </DialogFooter>
           </>
@@ -308,7 +308,7 @@ export function AddKitDialog({
                 disabled={hasLintError}
                 className={cn(hasLintError && "opacity-50")}
               >
-                <ShieldAlert className="h-4 w-4" /> 确认安装
+                <ShieldWarning className="h-4 w-4" /> 确认安装
               </Button>
             </DialogFooter>
           </>
@@ -354,7 +354,7 @@ export function AddKitDialog({
           <>
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-destructive">
-                <AlertTriangle className="h-5 w-5" /> 安装失败
+                <Warning className="h-5 w-5" /> 安装失败
               </DialogTitle>
             </DialogHeader>
             <p className="text-sm text-muted-foreground">{error}</p>

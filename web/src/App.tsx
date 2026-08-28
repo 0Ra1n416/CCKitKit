@@ -1,12 +1,16 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
-import { Topbar } from "@/components/Topbar"
-import { ScopeSidebar, type ActiveScope } from "@/components/ScopeSidebar"
+import { AppSidebar, type ActiveScope } from "@/components/AppSidebar"
 import { KitList } from "@/components/KitList"
-import { BudgetBar } from "@/components/BudgetBar"
 import { AddKitDialog } from "@/components/AddKitDialog"
 import { DoctorDialog } from "@/components/DoctorDialog"
+import { AddScopeDialog } from "@/components/AddScopeDialog"
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/components/ui/sidebar"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { api, type SkillItem, type SkillState } from "@/lib/api"
 
@@ -15,6 +19,7 @@ export default function App() {
   const [active, setActive] = useState<ActiveScope>({ scope: "global" })
   const [addOpen, setAddOpen] = useState(false)
   const [doctorOpen, setDoctorOpen] = useState(false)
+  const [addScopeOpen, setAddScopeOpen] = useState(false)
 
   const scopesQ = useQuery({ queryKey: ["scopes"], queryFn: api.scopes })
   const skillsQ = useQuery({
@@ -31,7 +36,7 @@ export default function App() {
     mutationFn: ({ skill, state }: { skill: SkillItem; state: SkillState }) =>
       api.setState(skill.name, state, active.scope, active.root),
     onSuccess: (data) => {
-      toast.info(data.message)
+      toast.error(data.message)
       qc.invalidateQueries({ queryKey: ["skills"] })
     },
     onError: (e) => toast.error((e as Error).message),
@@ -56,13 +61,20 @@ export default function App() {
     onError: (e) => toast.error((e as Error).message),
   })
 
+  const removeScopeMut = useMutation({
+    mutationFn: (path: string) => api.removeScope(path),
+    onSuccess: (data, path) => {
+      toast.success("已取消关注")
+      qc.setQueryData(["scopes"], data)
+      if (active.scope === "project" && active.root === path) {
+        setActive({ scope: "global" })
+      }
+    },
+    onError: (e) => toast.error((e as Error).message),
+  })
+
   const handleRemove = (kit: string) => {
-    toast(`确定卸载「${kit}」？`, {
-      action: {
-        label: "确认卸载",
-        onClick: () => removeKitMut.mutate(kit),
-      },
-    })
+    removeKitMut.mutate(kit)
   }
 
   const skills = skillsQ.data?.skills ?? []
@@ -71,45 +83,51 @@ export default function App() {
   const refreshing = skillsQ.isFetching || scopesQ.isFetching
 
   return (
-    <TooltipProvider delayDuration={200}>
-      <div className="flex h-screen flex-col">
-        <Topbar
-          onRefresh={invalidate}
-          onAdd={() => setAddOpen(true)}
-          onDoctor={() => setDoctorOpen(true)}
-          refreshing={refreshing}
-        />
-        <div className="flex min-h-0 flex-1">
-          <ScopeSidebar
-            scopes={scopes}
-            active={active}
-            onSelect={setActive}
-            onAdd={(p) => addScopeMut.mutate(p)}
-          />
-          <main className="flex min-w-0 flex-1 flex-col">
-            <div className="flex-1 overflow-y-auto p-4">
-              <KitList
-                skills={skills}
-                onChange={(s, st) => setStateMut.mutate({ skill: s, state: st })}
-                onRemove={handleRemove}
-              />
-            </div>
-            <BudgetBar budget={budget} />
-          </main>
-        </div>
-
-        <AddKitDialog
-          open={addOpen}
-          onOpenChange={setAddOpen}
+    <TooltipProvider delay={200}>
+      <SidebarProvider>
+        <AppSidebar
+          scopes={scopes}
           active={active}
-          onInstalled={invalidate}
+          onSelect={setActive}
+          onAddScope={() => setAddScopeOpen(true)}
+          onRemoveScope={(p) => removeScopeMut.mutate(p)}
+          onAddKit={() => setAddOpen(true)}
+          onDoctor={() => setDoctorOpen(true)}
+          onRefresh={invalidate}
+          refreshing={refreshing}
+          budget={budget}
         />
-        <DoctorDialog
-          open={doctorOpen}
-          onOpenChange={setDoctorOpen}
-          onDone={invalidate}
-        />
-      </div>
+        <SidebarInset>
+          <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
+            <SidebarTrigger />
+            <span className="text-sm font-medium">Skills</span>
+          </header>
+          <div className="flex-1 overflow-y-auto p-4">
+            <KitList
+              skills={skills}
+              onChange={(s, st) => setStateMut.mutate({ skill: s, state: st })}
+              onRemove={handleRemove}
+            />
+          </div>
+        </SidebarInset>
+      </SidebarProvider>
+
+      <AddKitDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        active={active}
+        onInstalled={invalidate}
+      />
+      <DoctorDialog
+        open={doctorOpen}
+        onOpenChange={setDoctorOpen}
+        onDone={invalidate}
+      />
+      <AddScopeDialog
+        open={addScopeOpen}
+        onOpenChange={setAddScopeOpen}
+        onAdd={(p) => addScopeMut.mutate(p)}
+      />
     </TooltipProvider>
   )
 }

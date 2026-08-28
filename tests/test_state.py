@@ -198,10 +198,14 @@ def test_global_skill_project_list_surfaces_override(tmp_path):
     assert proj[0].kit == "testkit"
     assert proj[0].scope == "project"
     assert proj[0].state == "off"
-    # 清掉项目覆盖后(enable --project = 跟随全局),项目作用域不再出现它
+    # 清掉项目覆盖后(enable --project = 跟随全局),项目作用域仍列出它,
+    # 状态跟随全局(enabled),并标记 is_global_skill=True。
     state.set_state("foo", "enabled", "global")
     state.set_state("foo", "enabled", "project")
-    assert [s for s in state.list_skills("project") if s.name == "foo"] == []
+    followed = [s for s in state.list_skills("project") if s.name == "foo"]
+    assert len(followed) == 1
+    assert followed[0].state == "enabled"
+    assert followed[0].is_global_skill is True
 
 
 def test_global_skill_project_enabled_raises(tmp_path):
