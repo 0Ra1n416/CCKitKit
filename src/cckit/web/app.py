@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from .. import config, doctor, installer, projects, registry, state
 from ..errors import CckitError
 
-app = FastAPI(title="cckit web", version="0.2.0")
+app = FastAPI(title="cckit web", version="0.2.1")
 
 
 # ---- 错误契约 ----
