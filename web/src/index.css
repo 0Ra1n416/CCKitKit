@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 20% 7%;
+    --foreground: 210 24% 93%;
+    --card: 222 18% 10%;
+    --card-foreground: 210 24% 93%;
+    --popover: 222 18% 10%;
+    --popover-foreground: 210 24% 93%;
+    --primary: 168 76% 45%;
+    --primary-foreground: 168 76% 6%;
+    --secondary: 222 14% 15%;
+    --secondary-foreground: 210 24% 90%;
+    --muted: 222 12% 14%;
+    --muted-foreground: 210 10% 55%;
+    --accent: 222 14% 17%;
+    --accent-foreground: 210 24% 93%;
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 222 12% 17%;
+    --input: 222 12% 19%;
+    --ring: 168 76% 45%;
+    --radius: 0.5rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

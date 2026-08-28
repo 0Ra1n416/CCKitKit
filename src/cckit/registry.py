@@ -91,19 +91,21 @@ def add_override_scope(name: str, scope_value: str) -> None:
         save(data)
 
 
-def _kit_in_scope(info: dict, scope: str) -> bool:
+def _kit_in_scope(info: dict, scope: str, root: Path | None = None) -> bool:
     """kit 的 known_scopes 是否包含给定作用域。
 
-    project 作用域按当前项目根路径比对(与 installer 写 known_scopes 时一致)。
+    project 作用域按项目根路径比对(与 installer 写 known_scopes 时一致)。
+    root 显式给定时以其为准(Web 侧栏选中任意项目作用域时),否则回落到 cwd 的项目根。
     """
     scopes = info.get("known_scopes") or []
     if scope == "global":
         return "global" in scopes
-    root = config.project_root()
-    return root is not None and str(root) in scopes
+    r = root or config.project_root()
+    return r is not None and str(r) in scopes
 
 
-def find_skill_matches(name: str, scope: str | None = None) -> list[tuple[str, dict]]:
+def find_skill_matches(name: str, scope: str | None = None,
+                       root: Path | None = None) -> list[tuple[str, dict]]:
     """返回所有匹配的 (kit, skill) 列表,不报错(0 或 >1 都原样返回)。
 
     供 state.set_state 的项目作用域回退逻辑用:先找项目 kit,没有时再回退全局
@@ -111,7 +113,7 @@ def find_skill_matches(name: str, scope: str | None = None) -> list[tuple[str, d
     """
     matches: list[tuple[str, dict]] = []
     for kit, info in load().get("kits", {}).items():
-        if scope is not None and not _kit_in_scope(info, scope):
+        if scope is not None and not _kit_in_scope(info, scope, root):
             continue
         for sk in info.get("skills", []):
             if sk.get("name") == name:
@@ -119,14 +121,15 @@ def find_skill_matches(name: str, scope: str | None = None) -> list[tuple[str, d
     return matches
 
 
-def find_skill(name: str, scope: str | None = None) -> tuple[str, dict]:
+def find_skill(name: str, scope: str | None = None,
+               root: Path | None = None) -> tuple[str, dict]:
     """按 skill 名查找,要求唯一;0 或 >1 都报错。
 
     scope 给定时("global"/"project")只在对应作用域内找 —— 同名 skill
     全局与项目各装一份时,靠作用域即可唯一定位(见 Docs/04:所有命令默认
     全局,`--project` 作用项目)。scope=None 时在全部 kit 里找。
     """
-    matches = find_skill_matches(name, scope)
+    matches = find_skill_matches(name, scope, root)
     if not matches:
         where = f"({scope} 作用域)" if scope else ""
         raise CckitError(f"skill {name!r} 不在 registry 中{where}(不是 cckit 管理或未安装)")

@@ -27,7 +27,7 @@ def _runtime_for_script(script_path: Path) -> str:
         return "python"
     if ext in (".js", ".mjs"):
         return "node"
-    raise ExecError(f"不支持的脚本类型 {script_path.name}(v0.1 仅支持 .py/.js/.mjs)")
+    raise ExecError(f"不支持的脚本类型 {script_path.name}(v0.2 仅支持 .py/.js/.mjs)")
 
 
 def run(skill: str, script: str, args: list[str], scope: str = "global") -> int:

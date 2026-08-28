@@ -212,6 +212,17 @@ def cmd_exec(args) -> int:
     return exec_mod.run(args.skill, args.script, args.args, scope=_scope(args))
 
 
+def cmd_web(args) -> int:
+    """启动 Web 管理面板。fastapi/uvicorn 缺失时给出友好提示,不崩溃。"""
+    try:
+        from .web import serve
+    except ImportError:
+        print("web 端未安装,请运行: uv tool install 'cckit[web]'", file=sys.stderr)
+        return 1
+    serve(args.host, args.port, args.static_dir)
+    return 0
+
+
 # ---- parser ----
 
 def build_parser() -> argparse.ArgumentParser:
@@ -268,6 +279,14 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--project", action="store_true", help="作用于项目作用域")
     x.add_argument("args", nargs=argparse.REMAINDER, help="传给脚本的参数")
     x.set_defaults(func=cmd_exec)
+
+    w = sub.add_parser("web", help="启动 Web 管理面板(需安装 [web] 额外依赖)")
+    w.add_argument("--host", default="127.0.0.1",
+                   help="监听地址(默认 127.0.0.1;部署时用 --host 0.0.0.0)")
+    w.add_argument("--port", type=int, default=8000, help="端口(默认 8000)")
+    w.add_argument("--static-dir", default=None,
+                   help="前端静态产物目录(缺省不托管,配合 vite dev 使用)")
+    w.set_defaults(func=cmd_web)
 
     return p
 

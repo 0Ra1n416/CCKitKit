@@ -23,7 +23,7 @@ class Finding:
     fix: str | None = None
 
 
-def run(fix: bool = False) -> list[Finding]:
+def run(fix: bool = False, on_event=None) -> list[Finding]:
     findings: list[Finding] = []
 
     # 1. uv 是否在 PATH
@@ -42,7 +42,7 @@ def run(fix: bool = False) -> list[Finding]:
     findings += _check_name_conflicts()
 
     if fix:
-        _apply_fixes(findings)
+        _apply_fixes(findings, on_event)
 
     return findings
 
@@ -157,8 +157,12 @@ def _check_name_conflicts() -> list[Finding]:
     return findings
 
 
-def _apply_fixes(findings: list[Finding]) -> None:
+def _apply_fixes(findings: list[Finding], on_event=None) -> None:
     """只做明确安全的修复:清理悬空 link、重建损坏的 python/node env。"""
+    def _emit(msg: str) -> None:
+        if on_event is not None:
+            on_event(msg)
+
     for _, d in state.scope_skills_dirs():
         if not d.is_dir():
             continue
@@ -180,6 +184,8 @@ def _apply_fixes(findings: list[Finding]) -> None:
         for sk in info.get("skills", []):
             for runtime, env_dir in (sk.get("envs") or {}).items():
                 if runtime == "python" and not env_mod.check_env(Path(env_dir), "python"):
+                    _emit(f"重建 env {kit}/{sk['name']} [{runtime}]")
                     env_mod.create_python_env(Path(env_dir), constraint, req)
                 elif runtime == "node" and not env_mod.check_env(Path(env_dir), "node"):
+                    _emit(f"重建 env {kit}/{sk['name']} [{runtime}]")
                     env_mod.create_node_env(Path(env_dir), pkg)

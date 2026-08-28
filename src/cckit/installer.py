@@ -24,6 +24,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterator
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion
@@ -52,6 +53,37 @@ class Plan:
     system_version_warn: list[dict] = field(default_factory=list)
     system_version_error: list[dict] = field(default_factory=list)
     skills: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class StagedInstall:
+    """stage_install 的结果:已 clone + 校验通过、等待确认的安装。"""
+    source: str
+    ref: str | None
+    sha: str | None
+    is_local_path: bool
+    scope: str                      # "global" | "project"
+    root: Path | None               # project 作用域的项目根
+    tmp_root: Path                  # 临时 clone 目录(execute 结束时清理)
+    kit_dir: Path                   # clone 出的 kit 目录(execute 时 move 进 store)
+    kit_name: str
+    data: dict                      # cckit.yaml 解析结果
+    plan: Plan
+    lint_msgs: list                 # lint.LintMessage 列表(可能含 error,由调用方决定是否继续)
+    only_names: set[str] | None
+    project_warns: list[str]        # 项目安装时的同名全局 skill 警告
+
+    def cleanup(self) -> None:
+        """放弃安装时清理临时 clone 目录(幂等)。"""
+        shutil.rmtree(self.tmp_root, ignore_errors=True)
+
+
+@dataclass
+class ProgressEvent:
+    """execute_install 的进度事件(供 CLI print / Web SSE 流式)。"""
+    stage: str                      # store | env | postinstall | registry | link | done
+    status: str = "done"            # done(正常进度);error 由异常承载,不进这里
+    message: str = ""
 
 
 # ---- clone ----
@@ -306,7 +338,7 @@ def _script_interpreter(script: Path, py_interp: Path | None) -> str:
         return str(py_interp) if py_interp else "python"
     if ext in (".js", ".mjs"):
         return "node"
-    raise InstallError(f"不支持的 postinstall 脚本类型 {script.name}(v0.1 仅支持 .py/.js)")
+    raise InstallError(f"不支持的 postinstall 脚本类型 {script.name}(v0.2 仅支持 .py/.js)")
 
 
 def run_postinstall(steps: list[dict], kit_dir: Path,
@@ -338,9 +370,9 @@ def run_postinstall(steps: list[dict], kit_dir: Path,
 
 def _registry_record(source: str, ref: str | None, sha: str | None, data: dict,
                      store_target: Path, envs: dict[str, dict[str, Path]],
-                     scope: str) -> dict:
-    root = config.project_root()
-    known = "global" if scope == "global" else str(root)
+                     scope: str, root: Path | None = None) -> dict:
+    proj_root = root or config.project_root()
+    known = "global" if scope == "global" else str(proj_root)
     skills = []
     for sk in data.get("skills", []):
         skills.append({
@@ -375,29 +407,27 @@ def _installed_descriptions() -> list[str]:
 
 # ---- add 主流程 ----
 
-def install(source: str, *, ref: str | None = None, project: bool = False,
-            no_enable: bool = False, only: str | None = None,
-            assume_yes: bool = False, is_local_path: bool = False) -> None:
-    """安装一个 kit。破坏性/高风险操作在非 -y 时需确认。
+def stage_install(source: str, *, ref: str | None = None, project: bool = False,
+                  only: str | None = None, is_local_path: bool = False,
+                  root: Path | None = None) -> StagedInstall:
+    """安装第一阶段:clone → 校验 manifest → lint → 计算计划,不落盘、不执行。
 
-    is_local_path=True 时把 source 当本地目录(非 git 目录则 copytree、无 sha);
-    否则当 git URL 直接交给 `git clone`。
+    返回 StagedInstall 供调用方展示计划并决定是否 execute_install。
+    lint 的 error 级别**不在此中止**(消息存进 lint_msgs),由调用方决定:
+    CLI 展示后中止、Web 展示后禁用确认。硬错误(manifest 无效、store 已存在等)
+    在此抛 InstallError 并清理临时目录。
     """
     scope = "project" if project else "global"
+    proj_root: Path | None = None
     if project:
-        # 项目作用域:确保项目根存在。尚无 .claude / cckit.lock 时以 cwd 为项目根,
-        # 并建出 .claude 目录(否则 set_state 无法定位项目 skills 目录)。
-        root = config.project_root() or Path.cwd().resolve()
-        (root / ".claude").mkdir(parents=True, exist_ok=True)
+        # 项目作用域:显式 root 优先,否则回落到 cwd 项目根 / cwd;确保 .claude 存在。
+        proj_root = root or config.project_root() or Path.cwd().resolve()
+        (proj_root / ".claude").mkdir(parents=True, exist_ok=True)
+
     tmp_root = Path(tempfile.mkdtemp(prefix="cckit-clone-"))
-    store_target: Path | None = None
-    env_dirs: list[Path] = []
-    reg_added = False
-    kit_name: str | None = None
     try:
         kit_dir, sha = _clone(source, ref, tmp_root, is_local_path)
 
-        # 校验 manifest(存在性 → schema → 语义)。失败即中止,不留残留。
         data = manifest.load(kit_dir / "cckit.yaml")
         manifest.validate_schema(data)
         manifest.semantic_check(data, kit_dir)
@@ -414,29 +444,104 @@ def install(source: str, *, ref: str | None = None, project: bool = False,
                 raise InstallError(
                     f"--only 指定的 skill 不在 kit 中: {', '.join(sorted(unknown))}")
 
-        # lint。error 中止;warn 展示。
         msgs = lint.LintKit(kit_dir, data, _installed_descriptions()).lint_kit()
-        for m in msgs:
-            print(f"[{m.level}] {m.message}")
-        if any(m.level == "error" for m in msgs):
-            raise InstallError("lint 发现错误,已中止(未留下任何残留)")
 
-        kit = data["kit"]
-        store_target = config.store_dir() / kit
+        store_target = config.store_dir() / kit_name
         if store_target.exists():
-            raise InstallError(f"kit {kit!r} 已安装(store 已存在),请先 `cckit remove {kit}`")
+            raise InstallError(f"kit {kit_name!r} 已安装(store 已存在),请先 `cckit remove {kit_name}`")
 
         # 项目安装时检测同名全局 skill(全局盖项目,见 Docs/06 2.3)
+        project_warns: list[str] = []
         if project:
             global_names = {s.name for s in state.list_skills("global")}
             for sk in data.get("skills", []):
                 if sk["name"] in global_names:
-                    print(f"[warn] 全局已存在同名 skill {sk['name']!r},"
-                          f"全局会覆盖项目版(enterprise > personal > project)")
+                    project_warns.append(
+                        f"[warn] 全局已存在同名 skill {sk['name']!r},"
+                        f"全局会覆盖项目版(enterprise > personal > project)")
 
-        # 展示计划并等确认
         plan = compute_plan(source, ref, sha, data, kit_dir)
-        print(render_plan(plan))
+
+        return StagedInstall(
+            source=source, ref=ref, sha=sha, is_local_path=is_local_path,
+            scope=scope, root=proj_root, tmp_root=tmp_root, kit_dir=kit_dir,
+            kit_name=kit_name, data=data, plan=plan, lint_msgs=msgs,
+            only_names=only_names, project_warns=project_warns,
+        )
+    except Exception:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        raise
+
+
+def execute_install(staged: StagedInstall, *, no_enable: bool = False) -> Iterator[ProgressEvent]:
+    """安装第二阶段:移入 store → 建 env → postinstall → registry → link。
+
+    逐 yield ProgressEvent(供 CLI 打印 / Web SSE)。异常时回滚 store/env/registry
+    残留并重抛;finally 清理临时 clone 目录。
+    """
+    kit = staged.kit_name
+    data = staged.data
+    store_target = config.store_dir() / kit
+    env_dirs: list[Path] = []
+    reg_added = False
+    try:
+        config.store_dir().mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staged.kit_dir), str(store_target))
+        yield ProgressEvent("store", "done", f"已移入 store: {store_target}")
+
+        envs = build_envs(data, store_target)
+        env_dirs = [d for m in envs.values() for d in m.values()]
+        yield ProgressEvent("env", "done",
+                            f"已建 {len(env_dirs)} 个环境" if env_dirs else "无环境依赖(纯 prompt skill)")
+
+        postinstall = data.get("postinstall") or []
+        if postinstall:
+            yield ProgressEvent("postinstall", "done", f"执行 {len(postinstall)} 个 postinstall 步骤")
+            run_postinstall(postinstall, store_target, envs)
+
+        registry.add_kit(kit, _registry_record(
+            staged.source, staged.ref, staged.sha, data, store_target, envs,
+            staged.scope, staged.root))
+        reg_added = True
+        yield ProgressEvent("registry", "done", "已写入 registry")
+
+        if not no_enable:
+            for sk in data.get("skills", []):
+                if staged.only_names is not None and sk["name"] not in staged.only_names:
+                    continue
+                state.set_state(sk["name"], "enabled", staged.scope, kit=kit, root=staged.root)
+            yield ProgressEvent("link", "done", "已启用 skill(新会话生效)")
+        else:
+            yield ProgressEvent("link", "done", "已安装(未启用,--no-enable)")
+
+        used, limit = state.budget(staged.scope, staged.root)
+        yield ProgressEvent("done", "done", f"清单预算: {used} / {limit} 字符")
+    except Exception:
+        shutil.rmtree(store_target, ignore_errors=True)
+        for d in env_dirs:
+            shutil.rmtree(d, ignore_errors=True)
+        if reg_added and kit:
+            registry.remove_kit(kit)
+        raise
+    finally:
+        shutil.rmtree(staged.tmp_root, ignore_errors=True)
+
+
+def install(source: str, *, ref: str | None = None, project: bool = False,
+            no_enable: bool = False, only: str | None = None,
+            assume_yes: bool = False, is_local_path: bool = False,
+            root: Path | None = None) -> None:
+    """CLI 的 add 流程:stage → 展示计划等确认 → execute。行为与拆分前一致。"""
+    staged = stage_install(source, ref=ref, project=project, only=only,
+                           is_local_path=is_local_path, root=root)
+    try:
+        for m in staged.lint_msgs:
+            print(f"[{m.level}] {m.message}")
+        if any(m.level == "error" for m in staged.lint_msgs):
+            raise InstallError("lint 发现错误,已中止(未留下任何残留)")
+        for w in staged.project_warns:
+            print(w)
+        print(render_plan(staged.plan))
         sys.stdout.flush()  # 确认前把计划刷出:uv/npm 子进程直接写 fd,绕过缓冲
         if not assume_yes:
             ans = input("继续安装? [y/N] ").strip().lower()
@@ -444,47 +549,18 @@ def install(source: str, *, ref: str | None = None, project: bool = False,
                 raise InstallError("已取消安装")
         else:
             print("[warn] -y 已跳过确认。安装等于运行仓库作者代码,请自行确认来源可信。")
-        sys.stdout.flush()  # -y 路径无 input,补一次 flush 保证计划先于子进程输出
+        sys.stdout.flush()
 
-        # 移入 store
-        config.store_dir().mkdir(parents=True, exist_ok=True)
-        shutil.move(str(kit_dir), str(store_target))
-        kit_dir = store_target
+        for _ev in execute_install(staged, no_enable=no_enable):
+            pass  # 中间进度不 print(uv/npm 子进程输出已直接透传)
 
-        # 建 env
-        envs = build_envs(data, store_target)
-        env_dirs = [d for m in envs.values() for d in m.values()]
-
-        # postinstall
-        run_postinstall(data.get("postinstall") or [], store_target, envs)
-
-        # 写 registry(先于 link —— set_state 需要 registry 定位 skill)
-        registry.add_kit(kit, _registry_record(source, ref, sha, data, store_target, envs, scope))
-        reg_added = True
-
-        # 建 link 启用
-        if not no_enable:
-            for sk in data.get("skills", []):
-                if only_names is not None and sk["name"] not in only_names:
-                    continue
-                state.set_state(sk["name"], "enabled", scope, kit=kit)
-
-        used, limit = state.budget()
-        print(f"已安装 {kit} {data.get('version', '')}")
+        used, limit = state.budget(staged.scope, staged.root)
+        print(f"已安装 {staged.kit_name} {staged.data.get('version', '')}")
         print(f"清单预算: {used} / {limit} 字符")
         print("提示:开关改动将在新会话生效。")
     except Exception:
-        # 回滚:临时目录、store、env、registry 记录(尽力而为)
-        shutil.rmtree(tmp_root, ignore_errors=True)
-        if store_target is not None and store_target.exists():
-            shutil.rmtree(store_target, ignore_errors=True)
-        for d in env_dirs:
-            shutil.rmtree(d, ignore_errors=True)
-        if reg_added and kit_name:
-            registry.remove_kit(kit_name)
+        staged.cleanup()
         raise
-    finally:
-        shutil.rmtree(tmp_root, ignore_errors=True)
 
 
 # ---- remove ----

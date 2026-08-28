@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from . import config, link, manifest, registry
+from . import config, link, manifest, projects, registry
 from . import env as env_mod
 from .errors import CckitError
 
@@ -42,15 +42,22 @@ class SkillState:
     version: str | None
 
 
+@dataclass
+class ScopeEntry:
+    path: str                       # "global" 或项目绝对路径
+    source: str                     # "global" | "installed" | "watched"
+    has_skills: bool
+
+
 # ---- 路径与读取 ----
 
-def _scope_skills_dir(scope: Scope) -> Path | None:
+def _scope_skills_dir(scope: Scope, root: Path | None = None) -> Path | None:
     if scope == "global":
         return config.claude_config_dir() / "skills"
-    root = config.project_root()
-    if root is None:
+    r = root or config.project_root()
+    if r is None:
         return None
-    return root / ".claude" / "skills"
+    return r / ".claude" / "skills"
 
 
 def _scope_settings_path(scope: Scope, root: Path | None = None) -> Path:
@@ -77,13 +84,13 @@ def _read_json(path: Path) -> dict:
     return data
 
 
-def read_settings(scope: Scope = "global") -> dict:
+def read_settings(scope: Scope = "global", root: Path | None = None) -> dict:
     """只读 settings 完整 dict。doctor / budget 读非 skillOverrides 键也走这里。"""
-    return _read_json(_scope_settings_path(scope))
+    return _read_json(_scope_settings_path(scope, root))
 
 
-def _read_overrides(scope: Scope) -> dict:
-    ov = read_settings(scope).get("skillOverrides", {})
+def _read_overrides(scope: Scope, root: Path | None = None) -> dict:
+    ov = read_settings(scope, root).get("skillOverrides", {})
     return ov if isinstance(ov, dict) else {}
 
 
@@ -140,9 +147,10 @@ def _atomic_write_json(path: Path, data: dict) -> None:
             os.unlink(tmp)
 
 
-def _write_override(scope: Scope, name: str, value: str | None) -> None:
+def _write_override(scope: Scope, name: str, value: str | None,
+                    root: Path | None = None) -> None:
     """锁 + 原子写 + 只改 skillOverrides。value=None 表示删除该键。"""
-    path = _scope_settings_path(scope)
+    path = _scope_settings_path(scope, root)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".cckit.lock")
     _acquire_lock(lock_path)
@@ -260,11 +268,13 @@ def _desc_chars(skill_dir: Path) -> int:
 
 # ---- 对外 API ----
 
-def list_skills(scope: Scope | None = None) -> list[SkillState]:
+def list_skills(scope: Scope | None = None, root: Path | None = None) -> list[SkillState]:
     """列出 skill。scope=None 列出全部作用域。
 
     同时列出非 cckit 管理的 skill(managed=False,只读)。
     启用状态现场从 link + skillOverrides 派生,不读任何落库的启用状态。
+    root 显式指定 project 作用域的项目根(Web 侧栏选中任意项目);scope 为
+    project/None 且 root 缺省时回落 config.project_root()(cwd,CLI 行为不变)。
     """
     reg = registry.load()
     store = config.store_dir()
@@ -273,10 +283,10 @@ def list_skills(scope: Scope | None = None) -> list[SkillState]:
     linked_managed: set[tuple[str, str]] = set()
 
     for sc in scopes:
-        skills_dir = _scope_skills_dir(sc)
+        skills_dir = _scope_skills_dir(sc, root)
         if skills_dir is None or not skills_dir.is_dir():
             continue
-        overrides = _read_overrides(sc)
+        overrides = _read_overrides(sc, root)
         for entry in sorted(skills_dir.iterdir()):
             name = entry.name
             if name == "synced":
@@ -304,7 +314,7 @@ def list_skills(scope: Scope | None = None) -> list[SkillState]:
 
     # 已安装但未建 link 的 managed skill → installed。归属作用域由 kit 的
     # known_scopes 决定,不硬编码 "global"(项目 kit 的未 link skill 应报 project)。
-    root = config.project_root()
+    proj_root = root or config.project_root()
     for kit_name, kit_info in reg.get("kits", {}).items():
         known = kit_info.get("known_scopes") or []
         for sk in kit_info.get("skills", []):
@@ -313,7 +323,7 @@ def list_skills(scope: Scope | None = None) -> list[SkillState]:
                 continue
             for sc in scopes:
                 in_scope = ("global" in known) if sc == "global" else (
-                    root is not None and str(root) in known)
+                    proj_root is not None and str(proj_root) in known)
                 if not in_scope:
                     continue
                 env_ok = _env_status(sk.get("envs") or {})
@@ -326,13 +336,13 @@ def list_skills(scope: Scope | None = None) -> list[SkillState]:
     # 注意:project skill 若有同名全局 skill,覆盖是写给项目 kit 的(见 set_state
     # 的定位顺序),不能误归属到全局 kit。故这里只对"项目作用域无同名 kit"的
     # 全局 skill 补项目级条目。
-    if (scope is None or scope == "project") and root is not None:
-        proj_ov = _read_overrides("project")
+    if (scope is None or scope == "project") and proj_root is not None:
+        proj_ov = _read_overrides("project", root)
         if proj_ov:
             project_kit_names = {
                 sk.get("name")
                 for kit_info in reg.get("kits", {}).values()
-                if registry._kit_in_scope(kit_info, "project")
+                if registry._kit_in_scope(kit_info, "project", root)
                 for sk in kit_info.get("skills", [])
                 if sk.get("name")
             }
@@ -356,19 +366,19 @@ def list_skills(scope: Scope | None = None) -> list[SkillState]:
     return result
 
 
-def get_state(name: str, scope: Scope = "global") -> str:
+def get_state(name: str, scope: Scope = "global", root: Path | None = None) -> str:
     """返回 skill 在指定作用域的当前状态。
 
     项目作用域下,全局 skill 可能没有项目 link,只有 settings.local.json 的
     覆盖(off/name-only/on);此时按覆盖推导,而不是一律报 installed。
     """
-    skills_dir = _scope_skills_dir(scope)
+    skills_dir = _scope_skills_dir(scope, root)
     link_path = skills_dir / name if skills_dir else None
     has_link = bool(link_path and (link.is_link(link_path) or link.is_dangling(link_path)))
     if has_link:
-        return _derive_state(True, _read_overrides(scope).get(name))
+        return _derive_state(True, _read_overrides(scope, root).get(name))
     if scope == "project" and skills_dir is not None:
-        ov = _read_overrides("project").get(name)
+        ov = _read_overrides("project", root).get(name)
         if ov is not None:
             return _derive_state(True, ov)
     return "installed"
@@ -383,19 +393,19 @@ def _kit_is_global(kit_name: str) -> bool:
     return bool(info) and "global" in (info.get("known_scopes") or [])
 
 
-def _resolve_for_project(name: str) -> tuple[str, bool]:
+def _resolve_for_project(name: str, root: Path | None = None) -> tuple[str, bool]:
     """项目作用域定位 skill 的 kit:先项目后全局。返回 (kit_name, is_global_kit)。
 
     项目作用域装过 → 项目 kit(is_global=False);没装但全局有 → 全局 kit
     (is_global=True);两处都没有或同名歧义 → 报错。
     """
-    matches = registry.find_skill_matches(name, "project")
+    matches = registry.find_skill_matches(name, "project", root)
     if len(matches) > 1:
         kits = ", ".join(k for k, _ in matches)
         raise CckitError(f"skill {name!r} 在多个 kit 中出现({kits}),无法唯一定位")
     if matches:
         return matches[0][0], False
-    gmatches = registry.find_skill_matches(name, "global")
+    gmatches = registry.find_skill_matches(name, "global", root)
     if len(gmatches) > 1:
         kits = ", ".join(k for k, _ in gmatches)
         raise CckitError(f"skill {name!r} 在多个 kit 中出现({kits}),无法唯一定位")
@@ -405,7 +415,7 @@ def _resolve_for_project(name: str) -> tuple[str, bool]:
 
 
 def set_state(name: str, state: StateName, scope: Scope = "global",
-              kit: str | None = None) -> None | str:
+              kit: str | None = None, root: Path | None = None) -> None | str:
     """把 skill 切到四态之一。enabled/name-only/off 需要 link;installed 删 link。
 
     kit 缺省时按 skill 名在 registry 里唯一查找;多个 kit 同名时报错。
@@ -425,7 +435,7 @@ def set_state(name: str, state: StateName, scope: Scope = "global",
         kit_name = kit
         is_global_kit = _kit_is_global(kit_name)
     elif scope == "project":
-        kit_name, is_global_kit = _resolve_for_project(name)
+        kit_name, is_global_kit = _resolve_for_project(name, root)
     else:
         kit_name, _ = registry.find_skill(name, scope)
         is_global_kit = True
@@ -453,18 +463,18 @@ def set_state(name: str, state: StateName, scope: Scope = "global",
         # 全局 skill 的项目级覆盖:不碰 link,只写 settings.local.json 的
         # skillOverrides。off/name-only 写覆盖并记入 override_scopes;
         value = _STATE_TO_OVERRIDE[state] if state in ("off", "name-only") else None
-        _write_override("project", name, value)
+        _write_override("project", name, value, root)
         if value is not None:
-            root = config.project_root()
-            if root is not None:
-                registry.add_override_scope(kit_name, str(root))
+            proj_root = root or config.project_root()
+            if proj_root is not None:
+                registry.add_override_scope(kit_name, str(proj_root))
         else:
             # 其他enable --project 代表"清掉项目覆盖、回到跟随全局",不建 link,不报错,直接返回。
             return f"{name} 在项目作用域已与全局同步({get_state(name, 'global')}),新会话生效"
         return
 
     target = config.store_dir() / kit_name / name
-    skills_dir = _scope_skills_dir(scope)
+    skills_dir = _scope_skills_dir(scope, root)
     if skills_dir is None:
         raise CckitError("无法确定作用域 skills 目录(项目作用域需在项目内)")
     link_path = skills_dir / name
@@ -472,7 +482,7 @@ def set_state(name: str, state: StateName, scope: Scope = "global",
     if state == "installed":
         if link.is_link(link_path) or link.is_dangling(link_path):
             link.remove(link_path)
-        _write_override(scope, name, None)
+        _write_override(scope, name, None, root)
         if scope == "global":
             # 全局 purge 同时清掉该 skill 在各项目根的项目级覆盖,避免孤儿覆盖(见 D-15)。
             info = registry.get_kit(kit_name)
@@ -489,19 +499,20 @@ def set_state(name: str, state: StateName, scope: Scope = "global",
         raise CckitError(f"{link_path} 已存在且是真实目录(用户手写 skill),拒绝覆盖")
     else:
         link.create(target, link_path)
-    _write_override(scope, name, _STATE_TO_OVERRIDE[state])
+    _write_override(scope, name, _STATE_TO_OVERRIDE[state], root)
     return
 
 
-def budget(scope: Scope | None = None) -> tuple[int, int]:
+def budget(scope: Scope | None = None, root: Path | None = None) -> tuple[int, int]:
     """清单预算:(已用字符, 上限)。
 
     scope 缺省(None)统计全部作用域;`list --project` 传 "project" 只算项目。
+    root 显式指定 project 作用域的项目根(与 list_skills 语义一致)。
     上限 = 缺省 config.DEFAULT_BUDGET_LIMIT_CHARS 字符 × skillListingBudgetFraction / 0.01。
     只统计 enabled 态的 skill —— name-only / off / installed 的 description
     不进上下文,不占预算。
     """
-    used = sum(s.desc_chars for s in list_skills(scope) if s.state == "enabled")
+    used = sum(s.desc_chars for s in list_skills(scope, root) if s.state == "enabled")
     settings = read_settings("global")
     fraction = settings.get("skillListingBudgetFraction", _BUDGET_FRACTION_DEFAULT)
     try:
@@ -512,3 +523,39 @@ def budget(scope: Scope | None = None) -> tuple[int, int]:
         fraction = _BUDGET_FRACTION_DEFAULT
     limit = int(config.DEFAULT_BUDGET_LIMIT_CHARS * fraction / _BUDGET_FRACTION_DEFAULT)
     return used, limit
+
+
+def list_scopes() -> list[ScopeEntry]:
+    """返回侧栏作用域清单:全局 + registry 历史项目 + 关注项目(去重)。
+
+    source 语义:
+      - "global": 全局作用域(固定一条)
+      - "installed": 曾在某项目根装过/覆盖过的历史项目(registry 的
+        known_scopes + override_scopes)
+      - "watched": 用户在 projects.json 里持续关注的项目(可能无 skill)
+    has_skills 用 list_skills 现场派生(该作用域下是否有任何 skill)。
+    """
+    entries: list[ScopeEntry] = []
+    seen: set[str] = {"global"}
+    entries.append(ScopeEntry("global", "global", bool(list_skills("global"))))
+
+    reg = registry.load()
+    reg_projects: set[str] = set()
+    for kit_info in reg.get("kits", {}).values():
+        for key in ("known_scopes", "override_scopes"):
+            for sc in kit_info.get(key) or []:
+                if sc and sc != "global":
+                    reg_projects.add(str(sc))
+
+    watched = projects.load()
+
+    for p in sorted(reg_projects):
+        if p not in seen:
+            seen.add(p)
+            entries.append(ScopeEntry(p, "installed", bool(list_skills("project", Path(p)))))
+    for p in sorted(watched):
+        if p not in seen:
+            seen.add(p)
+            entries.append(ScopeEntry(p, "watched", bool(list_skills("project", Path(p)))))
+
+    return entries
