@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 dist/
 release-notes/
+.claude/
+TODO.md

@@ -37,11 +37,19 @@ def create_python_env(env_dir: Path, python_constraint: str | None = None,
 
 
 def create_node_env(env_dir: Path, package_json: Path | None = None) -> None:
-    """Node 环境:把 package.json 拷进 env 目录再 npm install。"""
+    """Node 环境:把 package.json 拷进 env 目录再 npm install。
+
+    Windows 上 npm 是 npm.cmd(批处理),`subprocess.run(["npm", ...])` 会抛
+    FileNotFoundError(WinError 2)。这里经 `cmd /c` 转发,不用 shell=True
+    (避免 env_dir 含空格/特殊字符时的命令注入风险)。
+    """
     env_dir.mkdir(parents=True, exist_ok=True)
     if package_json and package_json.is_file():
         shutil.copy(package_json, env_dir / "package.json")
-        subprocess.run(["npm", "install", "--prefix", str(env_dir)], check=True)
+        cmd = ["npm", "install", "--prefix", str(env_dir)]
+        if os.name == "nt":
+            cmd = ["cmd", "/c", *cmd]
+        subprocess.run(cmd, check=True)
 
 
 def check_env(env_dir: Path, runtime: str) -> bool:

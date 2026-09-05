@@ -2,7 +2,7 @@
 
 # CCKitKit
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](#) [![版本](https://img.shields.io/badge/version-0.2.1-lightgrey)](#) [![测试](https://img.shields.io/badge/tests-82%20passed-brightgreen)](#)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](#) [![版本](https://img.shields.io/badge/version-0.3.0-lightgrey)](#) [![测试](https://img.shields.io/badge/tests-126%20passed-brightgreen)](#)
 
 </div>
 
@@ -41,6 +41,10 @@ uv run cckit --help           # 不安装直接跑
 # 安装一个 kit（git URL 或本地路径）
 cckit add https://github.com/example/video-toolkit
 cckit add ./local-kit --project --local
+
+# 导入非标准仓库（没有 cckit.yaml 的普通 skill 仓库，由 Claude Code 改造）
+uv tool install 'cckit[alt]'
+cckit add https://github.com/someone/my-skill --alt
 
 # 列出所有 skill 及清单预算占用
 cckit list
@@ -96,6 +100,7 @@ cd web && npm run dev    # 前端 dev server(:5173)，代理 /api 到 :8000
 - **kit 列表**：项目 kit 可收起/展开/卸载；每个 skill 带四态开关，`name-only` 附解释。
 - **全局 skill 项目覆盖**：项目作用域下，全局 skill 单独一组，可「跟随全局 / 仅名字 / 关闭」单独覆盖（不复用四态）。
 - **添加 Kit**：填仓库地址或本地路径 → 展示安装计划（依赖 / postinstall / 系统依赖 / 来源+sha）等确认 → 实时日志。
+- **导入非标准仓库**：开关「允许导入非标准仓库」后，对没有 `cckit.yaml` 的普通 skill 仓库走三阶段转换（准备 / 改造 / 审计），成功后进入既有安装流程。
 - **诊断**：勾选 `--fix` 自动修复明确安全的项，下方展示逐项结果。
 - **刷新**：侧栏刷新按钮 + 写操作后自动刷新；所有开关改动提示「新会话生效」。
 
@@ -185,6 +190,23 @@ cckit 装的是仓库作者的代码，因此这些是**不可省略的硬要求
 
 > 安装一个 kit 等同于在本机运行该仓库作者的代码。**请只安装你信任来源的 kit，并在安装前阅读 cckit 展示的执行计划。** 
 
+### 非标准仓库导入（`--alt`）的安全边界
+
+`--alt` 会在安装前调用 Claude Code 改造并审计**临时目录里**的仓库，额外的边界：
+
+- **标准仓库不碰 LLM**：有合法 `cckit.yaml` 时，即使带 `--alt` 也走原确定性流程。
+- **权限是 `auto`，不是无条件放行**：`permission_mode="auto"` 由 Claude Code 自动判断
+  每个工具调用是否放行；不设 `can_use_tool`、不用 `bypassPermissions`。
+- **隔离仓库自带的 settings/MCP**：`setting_sources=["user"]` 只加载用户级 settings，
+  跳过仓库自带的 `.claude/settings*.json`；`strict_mcp_config=True` 忽略仓库的
+  `.mcp.json`，防止仓库自我授权或借 MCP 执行代码。
+- **`cwd` 只是工作目录，不是沙箱**：它把 Agent 限定在临时仓库，但不等于文件系统隔离。
+- **确定性校验与安装计划确认仍是闸门**：改造后先过 `manifest/schema/semantic/lint`，
+  审计通过后还要走安装计划展示与用户确认、回滚机制；审计失败/不明确即中止。
+- **不记录改造后的 SHA**：保留原始来源 URL/ref，但不把原始 SHA 误标为改造后内容。
+- **临时目录必然清理**：成功、失败、取消、Ctrl+C 都清理 `cckit-alt-*` 目录并关闭
+  Claude Code 子进程。
+
 ## CCkit 目录布局
 
 ```
@@ -210,12 +232,13 @@ uv run cckit --help     # 直接跑，无需安装
 uv tool install --editable .   # 本机可编辑安装
 ```
 
-代码结构（`src/cckit/`，18 个文件，含 `web/` 子包）：
+代码结构（`src/cckit/`，19 个文件，含 `web/` 子包）：
 
 | 模块 | 职责 |
 |---|---|
 | `cli.py` | argparse 分发到 9 个子命令 |
 | `installer.py` | `add` 全流程：锁 sha → 校验 → lint → 计划确认 → store/env/postinstall/registry/link |
+| `alt.py` | 非标准仓库导入：前置条件 → 物化 → kit-builder 改造 → 审计 → 复用本地安装 |
 | `manifest.py` | `cckit.yaml` 加载 + schema 校验 + 语义检查 |
 | `schema.py` | JSON Schema 加载器（Draft 2020-12） |
 | `lint.py` | 命名 / description / CRLF / prompt injection / typosquatting |

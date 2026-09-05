@@ -11,6 +11,7 @@ import sys
 
 from . import doctor, exec as exec_mod, installer, state
 from .errors import CckitError
+from .manifest import MissingManifestError
 
 _SYMBOLS = {"installed": "·", "enabled": "●", "name-only": "◐", "off": "○"}  # 状态图标预定义
 _STATE_LABELS = {"installed": "已安装", "enabled": "已启用", "name-only": "仅名字", "off": "已关闭"}
@@ -131,6 +132,13 @@ def _print_list(skills: list[state.SkillState]) -> None:
 # 各个子命令的实现函数,返回 int 作为退出码
 
 def cmd_add(args) -> int:
+    if args.alt:
+        from . import alt
+        alt.install_alt(
+            args.source, ref=args.ref, project=args.project,
+            no_enable=args.no_enable, only=args.only, assume_yes=args.yes,
+            is_local_path=args.local)
+        return 0
     installer.install(
         args.source, ref=args.ref, project=args.project,
         no_enable=args.no_enable, only=args.only, assume_yes=args.yes, is_local_path=args.local)
@@ -247,6 +255,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--no-enable", action="store_true", help="只装不启用(installed 态)")
     a.add_argument("--project", action="store_true", help="装到当前项目而非全局")
     a.add_argument("--only", help="只启用指定 skill(逗号分隔)")
+    a.add_argument("--alt", action="store_true",
+                   help="允许导入非标准仓库(用 kit-builder + Claude Code 改造;需安装 [alt] 依赖)")
     a.add_argument("-y", "--yes", action="store_true",
                    help="跳过确认(CI 用)。⚠️ 安装等于运行仓库作者代码,请自行确认来源可信")
     a.set_defaults(func=cmd_add)
@@ -324,6 +334,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         return args.func(args) or 0
+    except MissingManifestError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        print("提示: 这是非标准仓库(缺少 cckit.yaml)。可用 `--alt` 让 Claude Code 改造后导入,"
+              "需先运行: uv tool install 'cckit[alt]'", file=sys.stderr)
+        return 1
     except CckitError as e:
         print(f"错误: {e}", file=sys.stderr)
         return 1

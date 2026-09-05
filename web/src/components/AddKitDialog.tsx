@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react"
-import { Check, CircleNotch, ShieldWarning, Warning } from "@phosphor-icons/react"
+import {
+  Check,
+  CircleNotch,
+  ShieldWarning,
+  Warning,
+  X,
+} from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -11,7 +17,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
-import { api, type LintMsg, type Plan } from "@/lib/api"
+import {
+  api,
+  type AltCheckResult,
+  type AltProgressEvent,
+  type LintMsg,
+  type Plan,
+} from "@/lib/api"
 import { useSSE } from "@/hooks/useSSE"
 import type { ActiveScope } from "./AppSidebar"
 
@@ -23,7 +35,14 @@ interface PreviewResult {
   project_warns: string[]
 }
 
-type Step = "form" | "plan" | "running" | "done" | "error"
+type Step = "form" | "plan" | "running" | "done" | "error" | "alt"
+
+const ALT_STAGES: AltProgressEvent["stage"][] = ["prepare", "builder", "audit"]
+const STAGE_LABEL: Record<AltProgressEvent["stage"], string> = {
+  prepare: "准备仓库",
+  builder: "改造仓库",
+  audit: "审计结果",
+}
 
 function PlanSection({
   title,
@@ -53,6 +72,59 @@ function PlanSection({
   )
 }
 
+function StageLog({ events }: { events: AltProgressEvent[] }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [stick, setStick] = useState(true)
+  const timerRef = useRef<number | null>(null)
+
+  // 新事件到来(数量增长)且处于「贴底」状态时,滚到最底部。
+  useEffect(() => {
+    if (stick) {
+      ref.current?.scrollTo({ top: ref.current.scrollHeight })
+    }
+  }, [events.length, stick])
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current)
+    },
+    [],
+  )
+
+  const onScroll = () => {
+    const el = ref.current
+    if (!el) return
+    if (timerRef.current) {
+      window.clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+    // 距底部 4px 内视为贴底；否则视为用户往上滚，暂停自动贴底。
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 4
+    if (atBottom) {
+      setStick(true)
+    } else {
+      setStick(false)
+      // 一段时间不操作后恢复自动贴底。
+      timerRef.current = window.setTimeout(() => setStick(true), 3000)
+    }
+  }
+
+  return (
+    <div
+      ref={ref}
+      onScroll={onScroll}
+      className="mt-1.5 min-h-0 flex-1 space-y-0.5 overflow-y-auto pl-6 font-mono text-xs text-muted-foreground"
+    >
+      {events.map((e, j) => (
+        <p key={j} className="break-all">
+          {e.kind === "tool" ? <span className="text-primary">▸ </span> : "· "}
+          {e.message}
+        </p>
+      ))}
+    </div>
+  )
+}
+
 export function AddKitDialog({
   open,
   onOpenChange,
@@ -72,6 +144,16 @@ export function AddKitDialog({
   const [logs, setLogs] = useState<string[]>([])
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
+
+  // alt:非标准仓库导入
+  const [alt, setAlt] = useState(false)
+  const [altChecking, setAltChecking] = useState(false)
+  const [altCheck, setAltCheck] = useState<AltCheckResult | null>(null)
+  const [altEvents, setAltEvents] = useState<AltProgressEvent[]>([])
+  const [altSessionId, setAltSessionId] = useState<string | null>(null)
+  const [altAllDone, setAltAllDone] = useState(false)
+  const [altError, setAltError] = useState("")
+
   const runSSE = useSSE()
   const logRef = useRef<HTMLDivElement>(null)
 
@@ -82,7 +164,7 @@ export function AddKitDialog({
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight })
-  }, [logs])
+  }, [logs, altEvents])
 
   const reset = () => {
     setStep("form")
@@ -93,6 +175,51 @@ export function AddKitDialog({
     setLogs([])
     setError("")
     setBusy(false)
+    setAlt(false)
+    setAltChecking(false)
+    setAltCheck(null)
+    setAltEvents([])
+    setAltSessionId(null)
+    setAltAllDone(false)
+    setAltError("")
+  }
+
+  // ---- alt 前置条件检查 ----
+  const toggleAlt = async (next: boolean) => {
+    if (!next) {
+      setAlt(false)
+      setAltCheck(null)
+      return
+    }
+    setAltChecking(true)
+    setAltCheck(null)
+    try {
+      const res = await api.altCheck()
+      if (res.status === "ready") {
+        setAlt(true)
+      } else {
+        setAlt(false)
+        setAltCheck(res)
+      }
+    } catch (e) {
+      setAlt(false)
+      setError((e as Error).message)
+    } finally {
+      setAltChecking(false)
+    }
+  }
+
+  const applyAltFix = async () => {
+    if (!altCheck?.auto_fix) return
+    setAltChecking(true)
+    setError("")
+    try {
+      await api.altFix(altCheck.auto_fix)
+      await toggleAlt(true)
+    } catch (e) {
+      setError((e as Error).message)
+      setAltChecking(false)
+    }
   }
 
   const doPreview = async () => {
@@ -105,11 +232,85 @@ export function AddKitDialog({
         local,
         project: active.scope === "project",
         root: active.scope === "project" ? active.root : undefined,
+        alt,
       })
+      if (r.non_standard && alt) {
+        startAlt()
+      } else {
+        setPreview(r)
+        setStep("plan")
+      }
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // ---- alt 三阶段转换 ----
+  const startAlt = async () => {
+    setStep("alt")
+    setAltEvents([])
+    setAltSessionId(null)
+    setAltAllDone(false)
+    setAltError("")
+    try {
+      await runSSE(
+        await api.altStart({
+          source,
+          ref: ref.trim() || undefined,
+          local,
+          project: active.scope === "project",
+          root: active.scope === "project" ? active.root : undefined,
+        }),
+        {
+          onAltProgress: (ev) => {
+            if (ev.session_id) setAltSessionId(ev.session_id)
+            setAltEvents((l) => [...l, ev])
+          },
+          onAltDone: (ev) => {
+            setAltSessionId(ev.session_id ?? null)
+            setAltAllDone(true)
+          },
+          onAltCancelled: () => {
+            setStep("form")
+            setAltEvents([])
+          },
+          onAltError: (msg) => {
+            setAltError(msg)
+          },
+        },
+      )
+    } catch (e) {
+      setAltError((e as Error).message)
+    }
+  }
+
+  const cancelAlt = async () => {
+    if (altSessionId) {
+      try {
+        await api.altCancel(altSessionId)
+      } catch {
+        /* 忽略取消请求本身的错误 */
+      }
+    }
+    setStep("form")
+    setAltEvents([])
+    setAltSessionId(null)
+    setAltAllDone(false)
+  }
+
+  const completeAlt = async () => {
+    if (!altSessionId) return
+    setBusy(true)
+    setError("")
+    try {
+      const r = await api.altComplete(altSessionId)
       setPreview(r)
       setStep("plan")
     } catch (e) {
       setError((e as Error).message)
+      setStep("alt")
     } finally {
       setBusy(false)
     }
@@ -145,6 +346,11 @@ export function AddKitDialog({
   }
 
   const hasLintError = (preview?.lint_msgs ?? []).some((m) => m.level === "error")
+
+  const stageEvents = (stage: AltProgressEvent["stage"]) =>
+    altEvents.filter((e) => e.stage === stage)
+  const stageDone = (stage: AltProgressEvent["stage"]) =>
+    stageEvents(stage).some((e) => e.kind === "done")
 
   return (
     <Dialog
@@ -200,14 +406,106 @@ export function AddKitDialog({
                   onChange={(e) => setRef(e.target.value)}
                 />
               )}
+
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={alt}
+                  disabled={altChecking}
+                  onChange={(e) => toggleAlt(e.target.checked)}
+                  className="h-4 w-4 accent-primary"
+                />
+                允许导入非标准仓库（用 Claude Code 改造）
+                {altChecking && <CircleNotch className="h-3.5 w-3.5 animate-spin" />}
+              </label>
+
+              {altCheck && !alt && (
+                <div className="space-y-2 rounded-md border p-3 text-sm">
+                  <p className="text-muted-foreground">
+                    {altCheck.status === "missing_extra"
+                      ? `需先安装 alt 额外依赖：${altCheck.reason}`
+                      : altCheck.reason}
+                  </p>
+                  <div className="flex gap-2">
+                    {altCheck.auto_fix && (
+                      <Button size="sm" onClick={applyAltFix} disabled={altChecking}>
+                        {altCheck.auto_fix === "install" ? "安装" : "修改"}
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setAltCheck(null)}
+                    >
+                      取消
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               {error && <p className="text-sm text-destructive">{error}</p>}
             </div>
             <DialogFooter>
               <Button variant="ghost" onClick={() => onOpenChange(false)}>
                 取消
               </Button>
-              <Button onClick={doPreview} disabled={!source.trim() || busy}>
+              <Button onClick={doPreview} disabled={!source.trim() || busy || altChecking}>
                 {busy && <CircleNotch className="animate-spin" />} 下一步
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+
+        {step === "alt" && (
+          <>
+            <DialogHeader>
+              <DialogTitle>导入非标准仓库</DialogTitle>
+              <DialogDescription>
+                改造与审计由 Claude Code 自动执行，临时目录会在流程结束后清理
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="flex h-[48vh] flex-col gap-2">
+              {ALT_STAGES.map((stage, i) => {
+                const events = stageEvents(stage)
+                const done = stageDone(stage)
+                const isCurrent =
+                  !done &&
+                  (i === 0 || stageDone(ALT_STAGES[i - 1])) &&
+                  !altError &&
+                  !altAllDone
+                return (
+                  <div key={stage} className="flex min-h-0 flex-1 flex-col rounded-md border p-2.5">
+                    <div className="flex shrink-0 items-center gap-2">
+                      {done ? (
+                        <Check className="h-4 w-4 text-primary" />
+                      ) : isCurrent ? (
+                        <CircleNotch className="h-4 w-4 animate-spin text-muted-foreground" />
+                      ) : (
+                        <span className="h-4 w-4" />
+                      )}
+                      <span className="text-sm font-medium">{STAGE_LABEL[stage]}</span>
+                    </div>
+                    {events.length > 0 && <StageLog events={events} />}
+                  </div>
+                )
+              })}
+
+              {altError && (
+                <p className="shrink-0 text-sm text-destructive">{altError}</p>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="destructive"
+                onClick={cancelAlt}
+                disabled={!altSessionId && !altAllDone && !!altError}
+              >
+                <X className="h-4 w-4" /> 终止
+              </Button>
+              <Button onClick={completeAlt} disabled={!altAllDone || busy}>
+                {busy && <CircleNotch className="animate-spin" />} 完成
               </Button>
             </DialogFooter>
           </>
@@ -226,7 +524,9 @@ export function AddKitDialog({
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span className="font-medium text-foreground">{preview.plan.kit}</span>
                 <span>{preview.plan.version}</span>
-                <span className="truncate">sha {preview.plan.sha?.slice(0, 8) ?? "(本地)"}</span>
+                <span className="truncate">
+                  sha {preview.plan.sha?.slice(0, 8) ?? "(本地)"}
+                </span>
               </div>
               {preview.plan.description && (
                 <p className="text-xs text-muted-foreground">{preview.plan.description}</p>

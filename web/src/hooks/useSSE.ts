@@ -1,10 +1,14 @@
 import { useCallback } from "react"
-import type { SseEvent } from "@/lib/api"
+import type { AltProgressEvent, SseEvent } from "@/lib/api"
 
 export interface SseHandler {
   onProgress?: (ev: SseEvent) => void
   onDone?: (ev: SseEvent) => void
   onError?: (message: string) => void
+  onAltProgress?: (ev: AltProgressEvent) => void
+  onAltDone?: (ev: SseEvent) => void
+  onAltCancelled?: (ev: SseEvent) => void
+  onAltError?: (message: string) => void
 }
 
 /**
@@ -46,6 +50,12 @@ export function useSSE() {
           else if (ev.event === "done") handler.onDone?.(ev)
           else if (ev.event === "error")
             handler.onError?.(ev.message ?? "未知错误")
+          else if (ev.event === "alt_progress")
+            handler.onAltProgress?.(ev as unknown as AltProgressEvent)
+          else if (ev.event === "alt_done") handler.onAltDone?.(ev)
+          else if (ev.event === "alt_cancelled") handler.onAltCancelled?.(ev)
+          else if (ev.event === "alt_error")
+            handler.onAltError?.(ev.message ?? "未知错误")
         }
       }
     } finally {

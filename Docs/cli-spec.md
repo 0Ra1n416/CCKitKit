@@ -36,7 +36,48 @@ cckit add ./local-kit --project --local
 | `--no-enable` | 只装不启用(落到 `installed` 态) |
 | `--project` | 装到当前项目而非全局 |
 | `--only <skill,...>` | 只启用 kit 中的部分 skill |
+| `--alt` | 允许导入非标准仓库(没有 `cckit.yaml` 的普通 skill 仓库),由 Claude Code 改造 |
 | `-y` | 跳过确认。CI 用,文档需警示风险 |
+
+### 非标准仓库导入(`--alt`)
+
+默认情况下,仓库根目录没有合法 `cckit.yaml` 会直接拒绝安装。加上 `--alt` 后,
+cckit 会在**显式开启、经过前置条件检查**的前提下,调用 Claude Code 把一个普通
+skill 仓库改造成标准 kit,再复用现有安装流程:
+
+```bash
+# 前置依赖:alt extra(内含 claude-agent-sdk)
+uv tool install 'cckit[alt]'
+
+# 导入一个普通 skill 仓库(没有 cckit.yaml)
+cckit add https://github.com/someone/my-skill --alt
+cckit add ./my-skill --local --alt
+```
+
+流程:
+
+1. 把远程仓库按 `--ref` 拉取、或把本地目录复制到临时目录(总是剥离 `.git`);
+2. 若仓库根目录已有 `cckit.yaml`,**仍走标准流程,不调用 Claude Code**;
+3. 前置条件检查:`claude-agent-sdk` 可导入 + 全局 `kit-builder` 处于 `enabled`;
+   - 未装 SDK → 提示 `uv tool install 'cckit[alt]'` 并以错误结束;
+   - `kit-builder` 缺失/状态不合适 → 提示修复命令,无冲突时可选择自动修复;
+   - 存在作用域/来源冲突 → 停止,不静默覆盖;
+4. 以临时仓库为 `cwd` 调用 `kit-builder` 改造仓库;
+5. 确定性校验:`manifest.load → validate_schema → semantic_check → lint`;
+6. 调用 Claude Code **审计**改造结果(prompt injection、敏感读取、外传、越界等);
+7. 只有校验与审计都通过,才把临时目录作为本地 Kit 交给现有安装接口,继续沿用
+   `--project` / `--no-enable` / `--only` / `-y` 等参数与安装计划确认;
+8. 无论成功、失败、取消还是 Ctrl+C,临时目录都在最外层 `try/finally` 清理。
+
+安全边界(详见 [07-security.md](07-security.md) 与 [05-design-log.md](05-design-log.md)):
+
+- 使用 `ClaudeAgentOptions(permission_mode="auto", cwd=临时目录)`,**不设置**
+  `can_use_tool`,**不使用** `bypassPermissions`;`auto` 是自动权限判断,不是无条件放行;
+- **隔离仓库自带的 settings/MCP**:`setting_sources=["user"]` 只加载用户级 settings,
+  `strict_mcp_config=True` 忽略仓库的 `.mcp.json`,防止仓库自我授权或借 MCP 执行代码;
+- `cwd` 只是限定 Agent 的工作目录,不是完整文件系统沙箱;
+- 审计失败、审计无法完成或审计结论不明确时,不得继续安装;
+- alt 流程**不记录改造后的 SHA**(改造后的内容已非原始仓库状态);保留原始来源 URL、ref。
 
 ### 必须拦截的情况
 

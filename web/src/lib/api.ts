@@ -67,11 +67,41 @@ export interface Finding {
 }
 
 export interface SseEvent {
-  event: "progress" | "done" | "error"
+  event:
+    | "progress"
+    | "done"
+    | "error"
+    | "alt_progress"
+    | "alt_done"
+    | "alt_cancelled"
+    | "alt_error"
   stage?: string
   status?: string
+  kind?: string
   message?: string
   findings?: Finding[]
+  session_id?: string
+  repo_dir?: string
+}
+
+export interface AltCheckResult {
+  sdk_available: boolean
+  status:
+    | "ready"
+    | "missing"
+    | "not_enabled"
+    | "conflict"
+    | "source_conflict"
+    | "missing_extra"
+  reason: string
+  auto_fix: "install" | "enable" | null
+}
+
+export interface AltProgressEvent {
+  stage: "prepare" | "builder" | "audit"
+  kind: "status" | "text" | "tool" | "error" | "done"
+  message: string
+  session_id?: string
 }
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
@@ -136,6 +166,7 @@ export const api = {
     project: boolean
     root?: string
     only?: string
+    alt?: boolean
   }) =>
     req<{
       preview_id: string
@@ -143,6 +174,7 @@ export const api = {
       plan: Plan
       lint_msgs: LintMsg[]
       project_warns: string[]
+      non_standard?: boolean
     }>("/api/add/preview", {
       method: "POST",
       headers: jsonHeaders,
@@ -160,6 +192,50 @@ export const api = {
   cancelPreview: (preview_id: string) =>
     req<{ message: string }>(`/api/add/preview/${preview_id}`, {
       method: "DELETE",
+    }),
+
+  // alt:非标准仓库导入
+  altCheck: () => req<AltCheckResult>("/api/add/alt/check"),
+
+  altFix: (action: "install" | "enable") =>
+    req<{ message: string }>("/api/add/alt/fix", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ action }),
+    }),
+
+  altStart: (body: {
+    source: string
+    ref?: string
+    local: boolean
+    project: boolean
+    root?: string
+    only?: string
+  }) =>
+    fetch("/api/add/alt/start", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(body),
+    }),
+
+  altCancel: (session_id: string) =>
+    req<{ message: string }>("/api/add/alt/cancel", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ session_id }),
+    }),
+
+  altComplete: (session_id: string) =>
+    req<{
+      preview_id: string
+      kit_name: string
+      plan: Plan
+      lint_msgs: LintMsg[]
+      project_warns: string[]
+    }>("/api/add/alt/complete", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ session_id }),
     }),
 
   doctor: (fix: boolean) =>

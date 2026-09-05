@@ -20,10 +20,19 @@ class ManifestError(CckitError):
     """cckit.yaml 不合法。"""
 
 
+class MissingManifestError(ManifestError):
+    """仓库根目录没有 cckit.yaml(非标准仓库)。
+
+    与"cckit.yaml 存在但内容不合法"区分开:前者是 alt 流程的触发条件
+    (普通 Skill 仓库),后者是标准仓库但 manifest 坏了,alt 不应接手。
+    """
+
+
 def load(manifest_path: Path) -> dict:
     """读 cckit.yaml;没有它直接拒绝。"""
     if not manifest_path.exists():
-        raise ManifestError(f"找不到 cckit.yaml: {manifest_path}(没有它,cckit 拒绝安装)")
+        raise MissingManifestError(
+            f"找不到 cckit.yaml: {manifest_path}(没有它,cckit 拒绝安装)")
     try:
         with open(manifest_path, encoding="utf-8") as f:
             data = yaml.safe_load(f)

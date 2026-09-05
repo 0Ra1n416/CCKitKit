@@ -6,8 +6,10 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import queue
+import shutil
 import threading
 import time
 import uuid
@@ -20,10 +22,11 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import config, doctor, installer, projects, registry, state
+from .. import alt, config, doctor, installer, projects, registry, state
 from ..errors import CckitError
+from ..manifest import MissingManifestError
 
-app = FastAPI(title="cckit web", version="0.2.1")
+app = FastAPI(title="cckit web", version="0.3.0")
 
 
 # ---- 错误契约 ----
@@ -61,6 +64,7 @@ class AddPreviewBody(BaseModel):
     project: bool = False
     root: str | None = None
     only: str | None = None
+    alt: bool = False
 
 
 class AddExecuteBody(BaseModel):
@@ -163,9 +167,15 @@ def _prune_staged() -> None:
 @app.post("/api/add/preview")
 def add_preview(body: AddPreviewBody):
     _prune_staged()
-    staged = installer.stage_install(
-        body.source, ref=body.ref, project=body.project, only=body.only,
-        is_local_path=body.local, root=_to_path(body.root))
+    try:
+        staged = installer.stage_install(
+            body.source, ref=body.ref, project=body.project, only=body.only,
+            is_local_path=body.local, root=_to_path(body.root))
+    except MissingManifestError:
+        # 非标准仓库:alt 开启时交给三阶段转换流程,否则维持原拒绝行为。
+        if body.alt:
+            return {"non_standard": True}
+        raise
     preview_id = uuid.uuid4().hex
     with _STAGED_LOCK:
         _STAGED[preview_id] = (staged, time.time())
@@ -211,6 +221,239 @@ def add_execute(body: AddExecuteBody):
             yield _sse({"event": "error", "message": str(e)})
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# ---- alt:非标准仓库三阶段转换(后台线程 + 队列 + SSE) ----
+
+class AltFixBody(BaseModel):
+    action: str                    # "install" | "enable"
+
+
+class AltStartBody(BaseModel):
+    source: str
+    ref: str | None = None
+    local: bool = False
+    project: bool = False
+    root: str | None = None
+    only: str | None = None
+
+
+class AltCancelBody(BaseModel):
+    session_id: str
+
+
+class AltCompleteBody(BaseModel):
+    session_id: str
+
+
+class _AltSession:
+    def __init__(self, source: str, ref: str | None, local: bool,
+                 project: bool, root: Path | None, only: str | None):
+        self.id = uuid.uuid4().hex
+        self.source = source
+        self.ref = ref
+        self.local = local
+        self.project = project
+        self.root = root
+        self.only = only
+        self.status = "running"        # running | done | cancelled | error
+        self.error = ""
+        self.tmp_root: Path | None = None
+        self.repo_dir: Path | None = None
+        self.cancel_event = threading.Event()
+        self.client_holder: dict = {}   # {"client": ClaudeSDKClient, "loop": loop}
+        self.queue: queue.Queue = queue.Queue()
+        self.thread: threading.Thread | None = None
+        self.created = time.time()
+        self.lock = threading.Lock()
+
+    def cleanup(self) -> None:
+        if self.tmp_root is not None:
+            shutil.rmtree(self.tmp_root, ignore_errors=True)
+            self.tmp_root = None
+            self.repo_dir = None
+
+    def request_cancel(self) -> None:
+        """设置取消标志并(尽力)请求 SDK client 中断。线程安全,可重复调用。"""
+        self.cancel_event.set()
+        client = self.client_holder.get("client")
+        loop = self.client_holder.get("loop")
+        if client is not None and loop is not None and not loop.is_closed():
+            try:
+                asyncio.run_coroutine_threadsafe(client.interrupt(), loop)
+            except Exception:
+                pass
+
+
+_ALT_SESSIONS: dict[str, _AltSession] = {}
+_ALT_LOCK = threading.Lock()
+_ALT_TTL = 1800.0  # 30 分钟未完成则回收
+
+
+def _prune_alt() -> None:
+    now = time.time()
+    with _ALT_LOCK:
+        expired = [sid for sid, s in _ALT_SESSIONS.items() if now - s.created > _ALT_TTL]
+        for sid in expired:
+            sess = _ALT_SESSIONS.pop(sid)
+            # 中断 client + 设取消标志;仍在运行的线程会在注意到取消后自行清理临时目录,
+            # 只有已结束的线程才在这里清理 tmp_root(否则会删掉正在被操作的目录)。
+            sess.request_cancel()
+            if sess.thread is None or not sess.thread.is_alive():
+                sess.cleanup()
+
+
+def _alt_worker(sess: _AltSession) -> None:
+    def emit(ev) -> None:
+        sess.queue.put(("event", ev))
+
+    try:
+        tmp_root, repo_dir = alt.run_alt_conversion(
+            sess.source, sess.ref, sess.local, emit,
+            is_cancelled=sess.cancel_event.is_set,
+            client_holder=sess.client_holder)
+        with sess.lock:
+            sess.tmp_root = tmp_root
+            sess.repo_dir = repo_dir
+            sess.status = "done"
+        sess.queue.put(("done", {"repo_dir": str(repo_dir)}))
+    except alt.AgentCancelled:
+        with sess.lock:
+            sess.status = "cancelled"
+        sess.cleanup()
+        sess.queue.put(("cancelled", ""))
+    except CckitError as e:
+        with sess.lock:
+            sess.status = "error"
+            sess.error = str(e)
+        sess.cleanup()
+        sess.queue.put(("error", str(e)))
+    except Exception as e:
+        with sess.lock:
+            sess.status = "error"
+            sess.error = str(e)
+        sess.cleanup()
+        sess.queue.put(("error", str(e)))
+
+
+@app.get("/api/add/alt/check")
+def alt_check():
+    """alt 开关开启时的前置条件检查(与 CLI 一致)。"""
+    if not alt.check_sdk_available():
+        return {
+            "sdk_available": False,
+            "status": "missing_extra",
+            "reason": alt._SDK_INSTALL_HINT,
+            "auto_fix": None,
+        }
+    st = alt.kit_builder_status()
+    return {
+        "sdk_available": True,
+        "status": st.status,
+        "reason": st.reason,
+        "auto_fix": st.auto_fix,
+    }
+
+
+@app.post("/api/add/alt/fix")
+def alt_fix(body: AltFixBody):
+    alt.apply_kit_builder_fix(body.action)
+    return {"message": "kit-builder 已就绪"}
+
+
+@app.post("/api/add/alt/start")
+def alt_start(body: AltStartBody):
+    _prune_alt()
+    sess = _AltSession(body.source, body.ref, body.local, body.project,
+                       _to_path(body.root), body.only)
+    with _ALT_LOCK:
+        _ALT_SESSIONS[sess.id] = sess
+    sess.thread = threading.Thread(target=_alt_worker, args=(sess,), daemon=True)
+    sess.thread.start()
+
+    def gen():
+        try:
+            while True:
+                kind, payload = sess.queue.get()
+                if kind == "event":
+                    yield _sse({"event": "alt_progress", "session_id": sess.id,
+                                "stage": payload.stage, "kind": payload.kind,
+                                "message": payload.message})
+                elif kind == "done":
+                    yield _sse({"event": "alt_done", "session_id": sess.id,
+                                "repo_dir": payload["repo_dir"]})
+                    break
+                elif kind == "cancelled":
+                    yield _sse({"event": "alt_cancelled", "session_id": sess.id})
+                    break
+                else:  # error
+                    yield _sse({"event": "alt_error", "session_id": sess.id,
+                                "message": payload})
+                    break
+        finally:
+            # 流被关闭(浏览器断开 / 提前取消)时,取消后台任务,避免孤儿 Claude Code 子进程与临时目录。
+            sess.request_cancel()
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.post("/api/add/alt/cancel")
+def alt_cancel(body: AltCancelBody):
+    with _ALT_LOCK:
+        sess = _ALT_SESSIONS.get(body.session_id)
+    if sess is None:
+        return {"message": "任务不存在"}
+    sess.request_cancel()
+    if sess.thread is not None:
+        sess.thread.join(timeout=15)
+    stopped = sess.thread is None or not sess.thread.is_alive()
+    return {
+        "message": "已终止" if stopped else "已请求终止,后台清理仍在进行",
+        "stopped": stopped,
+    }
+
+
+@app.post("/api/add/alt/complete")
+def alt_complete(body: AltCompleteBody):
+    """三阶段成功后,把转换出的临时 Kit 交给现有本地安装流程(stage_install)。"""
+    _prune_staged()
+    with _ALT_LOCK:
+        sess = _ALT_SESSIONS.get(body.session_id)
+    if sess is None:
+        raise CckitError("转换任务不存在或已过期")
+    with sess.lock:
+        if sess.status != "done" or sess.repo_dir is None:
+            raise CckitError("转换尚未完成或已失败,无法继续安装")
+        repo_dir = sess.repo_dir
+
+    try:
+        staged = installer.stage_install(str(repo_dir), is_local_path=True,
+                                         project=sess.project, only=sess.only, root=sess.root)
+        # alt 不记录改造后 SHA,保留原始来源信息(见 TODO 2.4)。
+        staged.source = sess.source
+        staged.ref = sess.ref
+        staged.sha = None
+        staged.plan.source = sess.source
+        staged.plan.ref = sess.ref
+        staged.plan.sha = None
+
+        preview_id = uuid.uuid4().hex
+        with _STAGED_LOCK:
+            _STAGED[preview_id] = (staged, time.time())
+
+        return {
+            "preview_id": preview_id,
+            "kit_name": staged.kit_name,
+            "plan": asdict(staged.plan),
+            "lint_msgs": [{"level": m.level, "message": m.message} for m in staged.lint_msgs],
+            "project_warns": staged.project_warns,
+        }
+    finally:
+        # 无论 stage_install 成败,都清掉 alt 会话与临时目录(转换结果已复制进
+        # stage_install 自己的临时目录,alt 临时目录不再需要)。
+        with _ALT_LOCK:
+            _ALT_SESSIONS.pop(sess.id, None)
+        sess.cleanup()
 
 
 # ---- doctor(SSE 流式) ----
