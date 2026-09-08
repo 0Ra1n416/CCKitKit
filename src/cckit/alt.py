@@ -74,13 +74,23 @@ class AgentResult:
 # ---- kit-builder 前置条件 ----
 
 def kit_builder_source_dir() -> Path | None:
-    """当前 cckit 源码树的 ./skills/kit-builder 绝对路径;找不到返回 None。
+    """当前 cckit 的 ./skills/kit-builder 绝对路径;找不到返回 None。
 
-    kit-builder 唯一可信来源是当前源码树里的 ./skills/kit-builder,不能从网络
-    搜索同名 Skill。这里从本模块位置向上定位源码树,不依赖 cwd 恰好是仓库根。
+    kit-builder 唯一可信来源是随 cckit 分发的 ./skills/kit-builder,不能从网络
+    搜索同名 Skill。这里按「源码树 → 随包分发」的顺序定位,不依赖 cwd 恰好是仓库根:
+
+      - 源码树:仓库根的 skills/kit-builder(开发/editable 安装);
+      - 随包:cckit/skills/kit-builder(hatch_build.py 打进 wheel 的位置)。
     """
-    p = Path(__file__).resolve().parents[2] / "skills" / "kit-builder"
-    return p if (p / "cckit.yaml").is_file() else None
+    here = Path(__file__).resolve()
+    candidates = (
+        here.parents[2] / "skills" / "kit-builder",  # 源码树 ./skills/kit-builder
+        here.parent / "skills" / "kit-builder",      # 随包 cckit/skills/kit-builder
+    )
+    for p in candidates:
+        if (p / "cckit.yaml").is_file():
+            return p
+    return None
 
 
 def _kit_builder_registry_conflicts() -> list[str]:
