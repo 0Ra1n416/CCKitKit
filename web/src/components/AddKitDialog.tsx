@@ -184,6 +184,13 @@ export function AddKitDialog({
     setAltError("")
   }
 
+  // 关闭并重置:按钮关闭与 Radix 关闭(X/点外部/Esc)都走这里,避免下次打开残留上次的
+  // step/source/日志状态(尤其「安装完成」屏)。
+  const close = () => {
+    reset()
+    onOpenChange(false)
+  }
+
   // ---- alt 前置条件检查 ----
   const toggleAlt = async (next: boolean) => {
     if (!next) {
@@ -446,7 +453,7 @@ export function AddKitDialog({
               {error && <p className="text-sm text-destructive">{error}</p>}
             </div>
             <DialogFooter>
-              <Button variant="ghost" onClick={() => onOpenChange(false)}>
+              <Button variant="ghost" onClick={close}>
                 取消
               </Button>
               <Button onClick={doPreview} disabled={!source.trim() || busy || altChecking}>
@@ -645,7 +652,7 @@ export function AddKitDialog({
               <DialogDescription>开关改动将在新会话生效</DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button onClick={() => onOpenChange(false)}>完成</Button>
+              <Button onClick={close}>完成</Button>
             </DialogFooter>
           </>
         )}
@@ -659,7 +666,7 @@ export function AddKitDialog({
             </DialogHeader>
             <p className="text-sm text-muted-foreground">{error}</p>
             <DialogFooter>
-              <Button onClick={() => onOpenChange(false)}>关闭</Button>
+              <Button onClick={close}>关闭</Button>
             </DialogFooter>
           </>
         )}
