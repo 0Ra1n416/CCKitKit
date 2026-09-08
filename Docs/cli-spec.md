@@ -169,3 +169,24 @@ skill 脚本的统一入口。SKILL.md 里只写这一句,不写解释器路径�
 
 要点:cwd **保持调用方 cwd**(让用户给的相对路径正常工作),脚本自身资源通过
 `CCKIT_SKILL_DIR` 定位。`scripts` 未在 manifest 声明的路径应拒绝执行。
+
+## `cckit web`
+
+启动 Web 管理面板(需 `[web]` extra,缺失时提示 `uv tool install 'cckit[web]'`)。
+前端静态产物随 wheel 打包,后端自动定位(包内 `static` → 源码 `web/dist`)。
+
+```bash
+cckit web                            # 前端后端一起起,打开 http://127.0.0.1:8000 即用
+cckit web --host 0.0.0.0 --port 8000 # 部署到服务器
+cckit web --base /cckit              # 挂到根路径前缀 /cckit 下
+```
+
+| 选项 | 说明 |
+|---|---|
+| `--host` | 监听地址,默认 `127.0.0.1`;部署时 `0.0.0.0` |
+| `--port` | 端口,默认 `8000` |
+| `--static-dir` | 前端静态产物目录(缺省不托管,配合 vite dev 使用) |
+| `--base` | 根路径前缀(如 `/cckit`)。运行时把整站(`/api/*`、`/assets/*`)挂到该前缀下,反向代理只需原样透传 `/base/*`;用于把面板以 iframe 嵌入宿主 dashboard 的子路径而不与宿主 `/api` 冲突 |
+
+`--base` 是**运行时**配置:后端 serve 时把 `window.__CCKIT_BASE__` 注入 `index.html`,
+前端据此拼 `/api` 前缀;前端资源用相对路径(`Vite base: "./"`)自动跟随子路径,无需重新构建。

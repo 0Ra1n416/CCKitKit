@@ -238,7 +238,7 @@ def cmd_web(args) -> int:
     except ImportError:
         print("web 端未安装,请运行: uv tool install 'cckit[web]'", file=sys.stderr)
         return 1
-    serve(args.host, args.port, args.static_dir)
+    serve(args.host, args.port, args.static_dir, args.base)
     return 0
 
 
@@ -307,6 +307,8 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--port", type=int, default=8000, help="端口(默认 8000)")
     w.add_argument("--static-dir", default=None,
                    help="前端静态产物目录(缺省不托管,配合 vite dev 使用)")
+    w.add_argument("--base", default="",
+                   help="根路径前缀(如 /cckit);经反向代理挂到子路径、iframe 嵌入时用")
     w.set_defaults(func=cmd_web)
 
     return p

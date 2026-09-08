@@ -104,6 +104,17 @@ export interface AltProgressEvent {
   session_id?: string
 }
 
+declare global {
+  interface Window {
+    __CCKIT_BASE__?: string
+  }
+}
+
+// 运行时根路径前缀:后端 serve 时注入 window.__CCKIT_BASE__(见 cckit web --base),
+// 根部署为空 → 所有路径仍落在 /api/*。
+const BASE = window.__CCKIT_BASE__ ?? ""
+const apiUrl = (p: string) => `${BASE}${p}`
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init)
   const data = await res.json().catch(() => ({}))
@@ -119,17 +130,17 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 const jsonHeaders = { "Content-Type": "application/json" }
 
 export const api = {
-  scopes: () => req<{ scopes: ScopeEntry[] }>("/api/scopes"),
+  scopes: () => req<{ scopes: ScopeEntry[] }>(apiUrl("/api/scopes")),
 
   addScope: (path: string) =>
-    req<{ scopes: ScopeEntry[] }>("/api/scopes", {
+    req<{ scopes: ScopeEntry[] }>(apiUrl("/api/scopes"), {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ path }),
     }),
 
   removeScope: (path: string) =>
-    req<{ scopes: ScopeEntry[] }>("/api/scopes", {
+    req<{ scopes: ScopeEntry[] }>(apiUrl("/api/scopes"), {
       method: "DELETE",
       headers: jsonHeaders,
       body: JSON.stringify({ path }),
@@ -137,12 +148,12 @@ export const api = {
 
   skills: (scope: Scope, root?: string) =>
     req<{ skills: SkillItem[]; budget: Budget }>(
-      `/api/skills?scope=${scope}${root ? `&root=${encodeURIComponent(root)}` : ""}`,
+      apiUrl(`/api/skills?scope=${scope}${root ? `&root=${encodeURIComponent(root)}` : ""}`),
     ),
 
   setState: (name: string, state: SkillState, scope: Scope, root?: string) =>
     req<{ message: string }>(
-      `/api/skills/${encodeURIComponent(name)}/state`,
+      apiUrl(`/api/skills/${encodeURIComponent(name)}/state`),
       {
         method: "POST",
         headers: jsonHeaders,
@@ -150,10 +161,10 @@ export const api = {
       },
     ),
 
-  kits: () => req<{ kits: KitInfo[] }>("/api/kits"),
+  kits: () => req<{ kits: KitInfo[] }>(apiUrl("/api/kits")),
 
   removeKit: (kit: string) =>
-    req<{ message: string }>(`/api/kits/${encodeURIComponent(kit)}/remove`, {
+    req<{ message: string }>(apiUrl(`/api/kits/${encodeURIComponent(kit)}/remove`), {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ keep_env: false }),
@@ -175,7 +186,7 @@ export const api = {
       lint_msgs: LintMsg[]
       project_warns: string[]
       non_standard?: boolean
-    }>("/api/add/preview", {
+    }>(apiUrl("/api/add/preview"), {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify(body),
@@ -183,22 +194,22 @@ export const api = {
 
   // SSE 端点:返回原生 Response,由调用方消费流。
   addExecute: (preview_id: string, no_enable: boolean) =>
-    fetch("/api/add/execute", {
+    fetch(apiUrl("/api/add/execute"), {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ preview_id, no_enable }),
     }),
 
   cancelPreview: (preview_id: string) =>
-    req<{ message: string }>(`/api/add/preview/${preview_id}`, {
+    req<{ message: string }>(apiUrl(`/api/add/preview/${preview_id}`), {
       method: "DELETE",
     }),
 
   // alt:非标准仓库导入
-  altCheck: () => req<AltCheckResult>("/api/add/alt/check"),
+  altCheck: () => req<AltCheckResult>(apiUrl("/api/add/alt/check")),
 
   altFix: (action: "install" | "enable") =>
-    req<{ message: string }>("/api/add/alt/fix", {
+    req<{ message: string }>(apiUrl("/api/add/alt/fix"), {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ action }),
@@ -212,14 +223,14 @@ export const api = {
     root?: string
     only?: string
   }) =>
-    fetch("/api/add/alt/start", {
+    fetch(apiUrl("/api/add/alt/start"), {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify(body),
     }),
 
   altCancel: (session_id: string) =>
-    req<{ message: string }>("/api/add/alt/cancel", {
+    req<{ message: string }>(apiUrl("/api/add/alt/cancel"), {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ session_id }),
@@ -232,14 +243,14 @@ export const api = {
       plan: Plan
       lint_msgs: LintMsg[]
       project_warns: string[]
-    }>("/api/add/alt/complete", {
+    }>(apiUrl("/api/add/alt/complete"), {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ session_id }),
     }),
 
   doctor: (fix: boolean) =>
-    fetch("/api/doctor", {
+    fetch(apiUrl("/api/doctor"), {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ fix }),

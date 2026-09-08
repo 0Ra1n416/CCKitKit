@@ -109,6 +109,10 @@ cd web && npm run dev    # 前端 dev server(:5173)，代理 /api 到 :8000
 - 后端**默认只绑 `127.0.0.1`**。要作为服务器面板被浏览器访问时，用 `cckit web --host 0.0.0.0`。
   ⚠️ 放开即把「能装 kit（跑作者代码）、能改 skill 状态」的能力暴露给网段，请只在可信内网使用，必要时在反向代理层加鉴权。
 - 嵌入其他页面用 **iframe**：后端托管前端后，宿主页 `<iframe src="http://<server>:<port>/">` 即可（同源隔离，无 CORS 问题）。
+- **子路径部署**：要把面板挂到宿主 dashboard 的某个子路径下（如 `/cckit/`），用 `cckit web --base /cckit`。
+  此时整站（`/cckit/api/*`、`/cckit/assets/*`）都挂到该前缀下，反向代理只需把 `/cckit/*` 原样转发给 cckit，
+  宿主页 `<iframe src="http://<server>:<port>/cckit/">` 即可，不会与 dashboard 自身的 `/api` 冲突。
+  `--base` 是**运行时**配置，无需重新构建前端。
 
 ## 特色
 

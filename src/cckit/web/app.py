@@ -18,7 +18,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -26,7 +26,9 @@ from .. import alt, config, doctor, installer, projects, registry, state
 from ..errors import CckitError
 from ..manifest import MissingManifestError
 
-app = FastAPI(title="cckit web", version="0.3.0")
+CCKIT_VERSION = "0.3.0"
+
+app = FastAPI(title="cckit web", version=CCKIT_VERSION)
 
 
 # ---- 错误契约 ----
@@ -490,14 +492,42 @@ def run_doctor(body: DoctorBody):
 
 # ---- 静态托管(前端 dist 存在时挂载) ----
 
-def _mount_static(static_dir: str) -> None:
-    """挂载前端静态产物 + SPA fallback(不遮挡 /api)。"""
+def _normalize_base(base: str) -> str:
+    """规范化根路径前缀:根部署(""或"/")返回 "",其余折叠重复斜杠并确保以 / 开头、无尾斜杠。"""
+    b = (base or "").strip()
+    if not b or b == "/":
+        return ""
+    parts = [seg for seg in b.split("/") if seg]
+    if not parts:
+        return ""
+    return "/" + "/".join(parts)
+
+
+def _inject_base(html: str, base: str) -> str:
+    """把 window.__CCKIT_BASE__ 注入 index.html 的 <head>,前端运行时据此拼 /api 前缀。
+
+    对注入值做 < > & 转义,防止 --base 携带的字符跳出 <script> 标签(防御性,非用户输入)。
+    """
+    if not base:
+        return html
+    value = (json.dumps(base)
+             .replace("<", "\\u003c")
+             .replace(">", "\\u003e")
+             .replace("&", "\\u0026"))
+    script = f"<script>window.__CCKIT_BASE__={value};</script>"
+    return html.replace("<head>", "<head>" + script, 1)
+
+
+def _mount_static(static_dir: str, base: str = "") -> None:
+    """挂载前端静态产物 + SPA fallback(不遮挡 /api)。base 非空时注入 __CCKIT_BASE__。"""
     sd = Path(static_dir).resolve()
     if not (sd / "index.html").is_file():
         return
     assets = sd / "assets"
     if assets.is_dir():
         app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
+
+    index_html = _inject_base((sd / "index.html").read_text(encoding="utf-8"), base)
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def _spa(full_path: str):
@@ -506,7 +536,7 @@ def _mount_static(static_dir: str) -> None:
         candidate = sd / full_path
         if full_path and candidate.is_file():
             return FileResponse(str(candidate))
-        return FileResponse(str(sd / "index.html"))
+        return HTMLResponse(index_html)
 
 
 def _default_static_dir() -> Path | None:
@@ -521,14 +551,25 @@ def _default_static_dir() -> Path | None:
 
 
 def serve(host: str = "127.0.0.1", port: int = 8000,
-          static_dir: str | None = None) -> None:
+          static_dir: str | None = None, base: str = "") -> None:
     """启动 uvicorn。host 默认 127.0.0.1;部署时显式传 0.0.0.0(见 Docs/09 安全要求)。
+
+    base 非空时把整站挂到该根路径前缀下(如 --base /cckit → /cckit/api、/cckit/assets),
+    便于经反向代理挂到 dashboard 子路径、用 iframe 嵌入而不与宿主页 /api 冲突。
 
     static_dir 缺省时自动定位前端产物(包内 static → 源码 web/dist);找不到则只跑 API。
     """
     import uvicorn
 
+    base = _normalize_base(base)
     target = Path(static_dir) if static_dir else _default_static_dir()
     if target is not None:
-        _mount_static(str(target))
-    uvicorn.run(app, host=host, port=port)
+        _mount_static(str(target), base=base)
+
+    root_app = app
+    if base:
+        # 把现有 app(所有 /api/* 与 /assets)整体挂到前缀下,代理只需原样透传 /base/*。
+        parent = FastAPI(title="cckit web", version=CCKIT_VERSION)
+        parent.mount(base, app, name="cckit")
+        root_app = parent
+    uvicorn.run(root_app, host=host, port=port)
