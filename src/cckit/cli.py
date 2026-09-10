@@ -356,7 +356,8 @@ def cmd_web(args) -> int:
     except ImportError:
         print("web 端未安装,请运行: uv tool install 'cckit[web]'", file=sys.stderr)
         return 1
-    serve(args.host, args.port, args.static_dir, args.base)
+    serve(args.host, args.port, args.static_dir, args.base,
+          notice=tuple(args.notice) if args.notice else None)
     return 0
 
 
@@ -441,6 +442,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="前端静态产物目录(缺省不托管,配合 vite dev 使用)")
     w.add_argument("--base", default="",
                    help="根路径前缀(如 /cckit);经反向代理挂到子路径、iframe 嵌入时用")
+    w.add_argument("--notice", nargs=2, metavar=("TITLE", "FILE"),
+                   help="面板顶部显示一条管理员通知,点击展开 FILE 的内容。"
+                        "TITLE 若以 - 开头请用引号包住。"
+                        "⚠️ 能访问面板的人都看得到,别放敏感信息")
     w.set_defaults(func=cmd_web)
 
     return p

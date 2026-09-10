@@ -12,7 +12,11 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { NoticeMenu } from "@/components/NoticeMenu"
 import { api, type SkillItem, type SkillState } from "@/lib/api"
+
+/** 由 `cckit web --notice` 启动时注入（见 web/app.py）；缺省 = 本次没配公告，不渲染控件。 */
+const NOTICE_TITLE = window.__CCKIT_NOTICE_TITLE__
 
 export default function App() {
   const qc = useQueryClient()
@@ -101,6 +105,7 @@ export default function App() {
           <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
             <SidebarTrigger />
             <span className="text-sm font-medium">Skills</span>
+            {NOTICE_TITLE && <NoticeMenu title={NOTICE_TITLE} />}
           </header>
           <div className="flex-1 overflow-y-auto p-4">
             <KitList

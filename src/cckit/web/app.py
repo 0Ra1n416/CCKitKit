@@ -171,6 +171,47 @@ def remove_kit(kit: str, body: RemoveKitBody):
     return {"message": f"已移除 {kit}"}
 
 
+# ---- 管理员通知(cckit web --notice TITLE FILE) ----
+#
+# 由**运维在启动时**给出,不是用户输入:标题注入前端首屏渲染,正文按需从这里取。
+# 没配 --notice 时 /api/info 返回 404,前端据此完全不渲染那个控件。
+
+_NOTICE: dict | None = None          # {"title": str, "path": Path};None = 本次没配
+_NOTICE_MAX_BYTES = 256 * 1024
+
+
+def _set_notice(title: str, file_path: str) -> str:
+    """校验并记下公告,返回标题供注入前端。
+
+    文件不存在就**当场抛错**(启动即失败)—— 别等用户点开弹窗才发现路径写错了。
+    内容不在此时读:每次请求现读,改公告不用重启。
+    """
+    global _NOTICE
+    path = Path(file_path).expanduser()
+    if not path.is_file():
+        raise CckitError(f"通知文件不存在或不是普通文件: {path}")
+    _NOTICE = {"title": title, "path": path}
+    return title
+
+
+@app.get("/api/info")
+def get_info():
+    """管理员通知的正文。未配置时 404 —— 前端据此不渲染控件。"""
+    if _NOTICE is None:
+        raise HTTPException(status_code=404, detail="not found")
+    path = _NOTICE["path"]
+    try:
+        size = path.stat().st_size
+        if size > _NOTICE_MAX_BYTES:
+            raise CckitError(
+                f"通知文件过大({size} 字节),超过 {_NOTICE_MAX_BYTES} 字节上限")
+        # errors="replace":一个非 UTF-8 的文件不该把面板打挂
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        raise CckitError(f"读取通知文件失败: {e}")
+    return {"title": _NOTICE["title"], "content": content}
+
+
 # ---- 配置:环境变量值 + 可修改的配置文件 ----
 #
 # 读写的路径解析与校验全在 state 里(见 Docs/09):端点绝不自己拼文件路径,
@@ -577,23 +618,39 @@ def _normalize_base(base: str) -> str:
     return "/" + "/".join(parts)
 
 
-def _inject_base(html: str, base: str) -> str:
-    """把 window.__CCKIT_BASE__ 注入 index.html 的 <head>,前端运行时据此拼 /api 前缀。
+def _js_string(value: str) -> str:
+    """把字符串编码成安全的 JS 字面量,防止携带的字符跳出 <script> 标签。
 
-    对注入值做 < > & 转义,防止 --base 携带的字符跳出 <script> 标签(防御性,非用户输入)。
+    转义 < > & 是防御性的:注入值来自命令行(--base / --notice),不是用户输入。
     """
+    return (json.dumps(value)
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("&", "\\u0026"))
+
+
+def _inject_base(html: str, base: str) -> str:
+    """把 window.__CCKIT_BASE__ 注入 index.html 的 <head>,前端运行时据此拼 /api 前缀。"""
     if not base:
         return html
-    value = (json.dumps(base)
-             .replace("<", "\\u003c")
-             .replace(">", "\\u003e")
-             .replace("&", "\\u0026"))
-    script = f"<script>window.__CCKIT_BASE__={value};</script>"
+    script = f"<script>window.__CCKIT_BASE__={_js_string(base)};</script>"
     return html.replace("<head>", "<head>" + script, 1)
 
 
-def _mount_static(static_dir: str, base: str = "") -> None:
-    """挂载前端静态产物 + SPA fallback(不遮挡 /api)。base 非空时注入 __CCKIT_BASE__。"""
+def _inject_notice(html: str, title: str | None) -> str:
+    """把 window.__CCKIT_NOTICE_TITLE__ 注入 <head>,让公告控件首屏就能画出来。
+
+    只注入**标题**:正文由 `/api/info` 按需取。这样大段公告不会塞进每一次
+    index.html 响应(SPA fallback 会对任意路径返回同一份 HTML),正文改了也不用重启。
+    """
+    if not title:
+        return html
+    script = f"<script>window.__CCKIT_NOTICE_TITLE__={_js_string(title)};</script>"
+    return html.replace("<head>", "<head>" + script, 1)
+
+
+def _mount_static(static_dir: str, base: str = "", notice_title: str | None = None) -> None:
+    """挂载前端静态产物 + SPA fallback(不遮挡 /api)。base / notice_title 非空时注入对应全局。"""
     sd = Path(static_dir).resolve()
     if not (sd / "index.html").is_file():
         return
@@ -601,7 +658,9 @@ def _mount_static(static_dir: str, base: str = "") -> None:
     if assets.is_dir():
         app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
 
-    index_html = _inject_base((sd / "index.html").read_text(encoding="utf-8"), base)
+    index_html = (sd / "index.html").read_text(encoding="utf-8")
+    index_html = _inject_base(index_html, base)
+    index_html = _inject_notice(index_html, notice_title)
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def _spa(full_path: str):
@@ -625,20 +684,25 @@ def _default_static_dir() -> Path | None:
 
 
 def serve(host: str = "127.0.0.1", port: int = 8000,
-          static_dir: str | None = None, base: str = "") -> None:
+          static_dir: str | None = None, base: str = "",
+          notice: tuple[str, str] | None = None) -> None:
     """启动 uvicorn。host 默认 127.0.0.1;部署时显式传 0.0.0.0(见 Docs/09 安全要求)。
 
     base 非空时把整站挂到该根路径前缀下(如 --base /cckit → /cckit/api、/cckit/assets),
     便于经反向代理挂到 dashboard 子路径、用 iframe 嵌入而不与宿主页 /api 冲突。
+
+    notice 是 (标题, 文件路径):给了就在面板顶部显示管理员通知控件。⚠️ 面板能访问到的
+    人都能看到该文件内容,远程部署时别放敏感信息(见 Docs/07)。
 
     static_dir 缺省时自动定位前端产物(包内 static → 源码 web/dist);找不到则只跑 API。
     """
     import uvicorn
 
     base = _normalize_base(base)
+    notice_title = _set_notice(*notice) if notice else None
     target = Path(static_dir) if static_dir else _default_static_dir()
     if target is not None:
-        _mount_static(str(target), base=base)
+        _mount_static(str(target), base=base, notice_title=notice_title)
 
     root_app = app
     if base:

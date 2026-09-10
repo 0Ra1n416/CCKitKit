@@ -50,6 +50,12 @@ export interface ConfigView {
   conf_files: string[]
 }
 
+/** 管理员通知的正文（`cckit web --notice TITLE FILE`） */
+export interface NoticeView {
+  title: string
+  content: string
+}
+
 export interface Budget {
   used: number
   limit: number
@@ -134,6 +140,8 @@ export interface AltProgressEvent {
 declare global {
   interface Window {
     __CCKIT_BASE__?: string
+    /** 由 `cckit web --notice` 启动时注入；缺省 = 本次没配公告，不渲染那个控件 */
+    __CCKIT_NOTICE_TITLE__?: string
   }
 }
 
@@ -145,13 +153,16 @@ const apiUrl = (p: string) => `${BASE}${p}`
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init)
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    throw new Error(
-      (data as { error?: { message?: string } })?.error?.message ??
-        `请求失败 (${res.status})`,
-    )
-  }
+  if (!res.ok) throw apiError(res, data)
   return data as T
+}
+
+/** 统一把后端的错误契约({error:{message}})转成 Error,前端只读 message。 */
+function apiError(res: Response, data: unknown): Error {
+  return new Error(
+    (data as { error?: { message?: string } })?.error?.message ??
+      `请求失败 (${res.status})`,
+  )
 }
 
 const jsonHeaders = { "Content-Type": "application/json" }
@@ -194,6 +205,20 @@ export const api = {
     ),
 
   kits: () => req<{ kits: KitInfo[] }>(apiUrl("/api/kits")),
+
+  /**
+   * 管理员通知正文（`cckit web --notice` 配了才有）。
+   *
+   * 后端在未配置时返回 **404** —— 这里把 404 转成 `null`（"这次没配公告"），
+   * 而不是当成错误往上抛。移动端/离线等其它失败仍照常抛。
+   */
+  notice: async (): Promise<NoticeView | null> => {
+    const res = await fetch(apiUrl("/api/info"))
+    if (res.status === 404) return null
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw apiError(res, data)
+    return data as NoticeView
+  },
 
   // 配置:环境变量值 + 可修改的配置文件。
   // skill 传 null 表示只要 kit 级（kit_env）的那份；root 只在项目作用域用得上。
