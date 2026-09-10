@@ -55,17 +55,27 @@ def test_skill_dir_mismatch(tmp_path):
     assert "缺少对应目录" in str(exc.value)
 
 
-def test_semantic_ok(tmp_path):
-    data = _load_fixture()
+def _materialize(tmp_path, data) -> None:
+    """把 fixture 的 skills 落到磁盘:目录 + SKILL.md + scripts[] + conf_files[]。"""
     for sk in data["skills"]:
-        (tmp_path / sk["name"]).mkdir()
-        (tmp_path / sk["name"] / "SKILL.md").write_text(
+        sdir = tmp_path / sk["name"]
+        sdir.mkdir()
+        (sdir / "SKILL.md").write_text(
             "---\ndescription: x\n---\n", encoding="utf-8")
         for script in sk.get("scripts") or []:
-            sp = tmp_path / sk["name"] / script
+            sp = sdir / script
             sp.parent.mkdir(parents=True, exist_ok=True)
             sp.write_text("", encoding="utf-8")
+        for conf in sk.get("conf_files") or []:
+            cp = sdir / conf
+            cp.parent.mkdir(parents=True, exist_ok=True)
+            cp.write_text("{}", encoding="utf-8")
     (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
+
+
+def test_semantic_ok(tmp_path):
+    data = _load_fixture()
+    _materialize(tmp_path, data)
     manifest.semantic_check(data, tmp_path)  # 不抛即通过
 
 
@@ -82,6 +92,46 @@ def test_script_path_missing(tmp_path):
     assert "脚本不存在" in str(exc.value)
 
 
+# ---- conf_files:路径安全与存在性 ----
+
+def test_conf_file_missing(tmp_path):
+    """声明了 config.json 但 skill 目录里没有 → 拒绝(CLI/Web 要按它读写)。"""
+    data = _load_fixture()          # fixture 自带 conf_files,这里刻意不建它
+    for sk in data["skills"]:
+        sdir = tmp_path / sk["name"]
+        sdir.mkdir()
+        (sdir / "SKILL.md").write_text("---\ndescription: x\n---\n", encoding="utf-8")
+        for script in sk.get("scripts") or []:
+            sp = sdir / script
+            sp.parent.mkdir(parents=True, exist_ok=True)
+            sp.write_text("", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("requests\n", encoding="utf-8")
+
+    with pytest.raises(CckitError) as exc:
+        manifest.semantic_check(data, tmp_path)
+    assert "conf_files 不存在" in str(exc.value)
+
+
+@pytest.mark.parametrize("bad", [
+    "../outside.json",           # 向上逃逸
+    "sub/../../outside.json",    # 中途逃逸
+    "..\\outside.json",          # 反斜杠同样要拦
+    "/etc/passwd",               # POSIX 绝对路径
+    "C:\\Windows\\win.ini",      # Windows 绝对路径
+    "",                          # 空串
+])
+def test_conf_file_escape_rejected(tmp_path, bad):
+    """conf_files 逃出 skill 目录 → 拒绝(否则 CLI/Web 变成任意文件读写)。"""
+    data = _load_fixture()
+    data["skills"][0].pop("conf_files", None)
+    _materialize(tmp_path, data)               # 先把正常结构物化出来
+    data["skills"][0]["conf_files"] = [bad]    # 再注入非法路径
+
+    with pytest.raises(CckitError) as exc:
+        manifest.semantic_check(data, tmp_path)
+    assert "相对路径" in str(exc.value)
+
+
 def test_schema_rejects_uppercase():
     data = _load_fixture()
     data["skills"][0]["name"] = "BurnSubs"  # 大写,违反 slug pattern
@@ -94,6 +144,32 @@ def test_schema_rejects_bad_uri():
     data["homepage"] = "http://exa mple.com"  # 含空格,非法 URI
     with pytest.raises(CckitError):
         manifest.validate_schema(data)
+
+
+# ---- 顶层 env 已改名为 kit_env ----
+
+def test_kit_env_accepted():
+    """fixture 用的就是 kit_env,应通过。"""
+    manifest.validate_schema(_load_fixture())
+
+
+def test_legacy_top_level_env_rejected():
+    """旧的顶层 env 不再被接受 —— 是"明确拒绝"而非静默忽略(见 TODO D-3.3)。"""
+    data = _load_fixture()
+    data["env"] = data.pop("kit_env")
+    with pytest.raises(CckitError) as exc:
+        manifest.validate_schema(data)
+    assert "env" in str(exc.value)
+
+
+def test_skill_env_and_conf_files_accepted():
+    """skill 级 env 与 conf_files 是本次新增的可选字段。"""
+    manifest.validate_schema(_load_fixture())
+    data = _load_fixture()
+    for sk in data["skills"]:
+        sk.pop("env", None)
+        sk.pop("conf_files", None)
+    manifest.validate_schema(data)  # 都不写也应通过(可选)
 
 
 def test_platform_rejected(tmp_path):

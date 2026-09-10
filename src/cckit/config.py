@@ -52,6 +52,16 @@ def usage_log_path() -> Path:
     return cckit_home() / "usage.jsonl"
 
 
+def user_envs_path() -> Path:
+    """用户在 CLI / Web 填写的环境变量值。
+
+    与 `envs/` 目录**不是一回事**:那个是每 skill 一个的 venv/node_modules,
+    这个是"环境变量键值对"。按 `{作用域}|{kit}[|{skill}]` 分桶存放,
+    由 `cckit exec` 注入(`state` 负责读写)。
+    """
+    return cckit_home() / "envs.json"
+
+
 def claude_config_dir() -> Path:
     """Claude Code 配置目录。
 

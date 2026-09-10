@@ -24,7 +24,9 @@ requires:
   python:
     file: requirements.txt
 
-env:
+# kit 共用的环境变量:只声明名字与用途,值由用户在 CLI/Web 填写。
+# 值存在 ~/.cckit/envs.json(不写 Claude Code 的 settings.json),cckit exec 时注入。
+kit_env:
   - name: OPENAI_API_KEY
     required: false
     description: 用于 describe-video 的字幕润色;不填则跳过该步骤
@@ -34,6 +36,11 @@ skills:
   - name: burn-subtitles
     needs: [ffmpeg, python]
     scripts: [scripts/burn.py]
+    env:                          # skill 专属环境变量;与 kit_env 同名时以这里为准
+      - name: FONT_DIR
+        required: true
+        description: 字幕字体所在目录
+    conf_files: [config.json]     # 相对 skill 根;用户可在 CLI/Web 里查看与修改
 
   # 纯 prompt:needs 为空,装它不触发任何环境安装
   - name: describe-video

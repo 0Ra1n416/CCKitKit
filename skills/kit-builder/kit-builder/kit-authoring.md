@@ -109,7 +109,7 @@ cckit 会先 clone/校验、再展示安装计划。**只要校验或 lint 有�
 | `description` | ✓ | 一句话说明,最长 200 字符 |
 | `platforms` | | `windows` / `linux` / `macos` 子集;缺省 = 全平台 |
 | `requires` | | 环境需求(§4.2) |
-| `env` | | 需要用户提供的环境变量(§4.4) |
+| `kit_env` | | kit 共用的环境变量声明(§4.4) |
 | `skills` | ✓ | 至少一项(§4.5) |
 | `postinstall` | | 安装后钩子(§4.6) |
 
@@ -154,16 +154,48 @@ requires:
 
 依赖不是 kit 级一次声明全局生效,而是**每个 skill 自己声明它需要什么**(`needs`)。
 
-### 4.4 `env` — 需要用户提供的环境变量
+### 4.4 环境变量:`kit_env` 与 skill 的 `env`
+
+写脚本的 skill 常常要用户提供一个 key、一个目录。**声明出来**,别在 SKILL.md 里用
+散文写"请先 export XXX" —— 声明过的会被 CLI(`cckit list --envs`)和 Web 面板列出来,
+用户能直接填。
 
 ```yaml
-env:
+kit_env:                       # kit 级:整个 kit 共用,填一次
   - name: OPENAI_API_KEY       # 必须匹配 ^[A-Z][A-Z0-9_]*$
-    required: false            # true 时缺失会报错
-    description: 用于 describe-video 的字幕润色,不填则跳过
+    required: false            # true 时缺失会让 cckit exec 报错中止
+    description: 用于字幕润色,不填则跳过该步骤
+
+skills:
+  - name: burn-subtitles
+    needs: [ffmpeg, python]
+    env:                       # skill 级:只对这个 skill 生效
+      - name: FONT_DIR
+        required: true
+        description: 字幕字体所在目录
 ```
 
-这些变量在 `cckit exec` 时会被注入到 skill 脚本环境;`required: true` 且缺失时报错。
+- 两者形状相同;**同名时 skill 级覆盖 kit 级**。
+- 值由用户在 `cckit env <skill> <NAME> <VALUE>` 或 Web 面板里填,存在 cckit 数据目录的
+  `envs.json`,由 `cckit exec` 注入到脚本环境。
+- ⚠️ **manifest 里没有 `value` / `default` 字段 —— 别想着写值。** 写进去就会随仓库
+  分发给所有人,密钥尤其致命。`required: false` 的变量没值时不注入、不报错,
+  脚本用 `os.environ.get(...)` 判断即可。
+
+### 4.4.1 `conf_files` — 让用户改你的配置文件
+
+```yaml
+skills:
+  - name: burn-subtitles
+    conf_files: [config.json]  # 相对 skill 目录,必须真实存在
+```
+
+声明后,`cckit list --confs` 会列出它,Web 面板里能预览和编辑。cckit 不解析文件内容,
+怎么用由脚本决定(通常用 `CCKIT_SKILL_DIR` 拼出路径来读)。
+
+- 路径必须在 skill 目录内,且文件必须真实存在(随仓库带一份默认值)。
+- ⚠️ **文件就在 skill 目录里,`cckit remove` 或重装会连 store 一起删掉,用户改的内容会丢。**
+  需要长期保留的数据,让脚本写到用户自己的目录。
 
 ### 4.5 `skills[]`
 
@@ -172,6 +204,8 @@ skills:
   - name: my-skill             # 必须与目录名一致
     needs: [ffmpeg, python]    # 依赖标签
     scripts: [scripts/run.py]  # 可选:相对 skill 目录的脚本路径
+    env: []                    # 可选:该 skill 专属的环境变量(§4.4)
+    conf_files: []             # 可选:可供用户修改的配置文件(§4.4.1)
 ```
 
 `needs` 的取值规则:

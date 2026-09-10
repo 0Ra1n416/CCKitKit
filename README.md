@@ -2,7 +2,7 @@
 
 # CCKitKit
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](#) [![版本](https://img.shields.io/badge/version-0.3.1-lightgrey)](#) [![测试](https://img.shields.io/badge/tests-132%20passed-brightgreen)](#)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](#) [![版本](https://img.shields.io/badge/version-0.3.1-lightgrey)](#) [![测试](https://img.shields.io/badge/tests-170%20passed-brightgreen)](#)
 
 </div>
 
@@ -49,12 +49,18 @@ cckit add https://github.com/someone/my-skill --alt
 # 列出所有 skill 及清单预算占用
 cckit list
 cckit list --json            # 机器可读输出
+cckit list --envs            # 附上各 skill 需要的环境变量（只报已设/未设，不回显值）
+cckit list --confs           # 附上各 skill 可修改的配置文件
 
 # 四态开关
 cckit enable my-skill        # → enabled
 cckit disable my-skill       # → off（写 skillOverrides，可逆）
 cckit disable my-skill --purge   # → installed（删 link）
 cckit name-only my-skill     # → name-only（CC只能读到Skill名字，而读不到Description，节省预算）
+
+# 填写 skill 需要的环境变量（值存 ~/.cckit/envs.json，cckit exec 时注入）
+cckit env my-skill                      # 列出声明与「已设/未设」
+cckit env my-skill FONT_DIR /usr/fonts  # 设置
 
 # 卸载 / 诊断
 cckit remove video-toolkit   # 删 link/env/store/registry/overrides
@@ -65,7 +71,7 @@ cckit doctor --fix           # 只修明确安全的项
 cckit exec my-skill scripts/run.py [args...]
 ```
 
-共 **9 个命令**：`add` / `list` / `enable` / `disable` / `name-only` / `remove` / `doctor` / `exec` / `web`。完整规格见 [Docs/cli-spec.md](Docs/cli-spec.md)。
+共 **10 个命令**：`add` / `list` / `env` / `enable` / `disable` / `name-only` / `remove` / `doctor` / `exec` / `web`。完整规格见 [Docs/cli-spec.md](Docs/cli-spec.md)。
 
 ## Web 管理面板
 
@@ -133,6 +139,7 @@ cckit 不重复造插件系统，只填这两个缺口：它把 skill 装到 **p
 | **skill** | 使用单位。CC 实际调用的东西，开关粒度也在这一层 |
 | **store** | kit 真实文件的存放地（`~/.cckit/store/<kit>/`），全局唯一一份 |
 | **env** | 每个 skill 独立的运行环境（venv / node_modules） |
+| **用户配置** | skill 需要的环境变量值与可改文件。声明写在 `kit_env` / `env` / `conf_files`，**值由用户填**，存在 `~/.cckit/envs.json`，`cckit exec` 时注入 |
 | **link** | store 与 CC 扫描目录之间的目录链接，启用状态的物理载体 |
 
 单个 skill 与 skill 集合**不分两套格式**，单个只是 `skills[]` 里 N=1 的特例。
@@ -172,10 +179,20 @@ kit: my-kit
 version: 0.1.0
 description: 一句话说明这个 kit 做什么
 
+kit_env:                        # (可选) kit 共用环境变量：只声明，值由用户填
+  - name: OPENAI_API_KEY
+    required: false
+    description: 用于字幕润色，不填则跳过
+
 skills:
   - name: my-skill              # 小写 kebab-case，与目录名一致
     needs: [python]             # [] = 纯 prompt；python/node 触发建环境
     scripts: [scripts/run.py]
+    env:                        # (可选) 该 skill 专属环境变量，同名时覆盖 kit_env
+      - name: FONT_DIR
+        required: true
+        description: 字幕字体所在目录
+    conf_files: [config.json]   # (可选) 用户可改的配置文件，相对 skill 目录
 ```
 
 安装前会跑 schema 校验 + 语义检查 + lint（skill 名合法性、description 质量、CRLF、prompt injection、typosquatting 提示），error 一律在做事之前中止。完整开发手册见 [skills/kit-builder/kit-builder/kit-authoring.md](skills/kit-builder/kit-builder/kit-authoring.md)，字段规范见 [skills/kit-builder/kit-builder/manifest-spec.md](skills/kit-builder/kit-builder/manifest-spec.md)。
@@ -191,6 +208,9 @@ cckit 装的是仓库作者的代码，因此这些是**不可省略的硬要求
   - `version_cmd` 收紧为 `<bin> <版本标志>` 白名单（`--version` / `-V` / `-v` / `version` / `-version`），其余一律拒绝并报 warn——堵住"借版本检查塞任意命令"的风险。
 - **SKILL.md prompt injection 启发式扫描**，**依赖名 typosquatting 提示**。
 - **写 `settings.json` 三件套**：文件锁 + 原子替换 + 只改 `skillOverrides` 键，否则会丢失更新或损坏用户配置。
+- **用户填的环境变量值不写 `settings.json`**，改存 `~/.cckit/envs.json` 并由 `cckit exec` 注入——那个键里装着用户的核心配置（如 `ANTHROPIC_AUTH_TOKEN`），写坏等于 CC 直接不可用。
+- **保存配置文件只落在 skill 目录内**：路径必须逐字命中 manifest 里的 `conf_files` 声明，且解析后仍在 skill 目录内（服务端校验，不信任客户端）。`cckit list --envs` 与面板一律**不回显值**，只报"已设/未设"。
+- **manifest 里没有放值的地方**（`kit_env` / `env` 只有 `name` / `required` / `description`），从根上杜绝作者把密钥提交进仓库再分发给所有用户。
 
 > 安装一个 kit 等同于在本机运行该仓库作者的代码。**请只安装你信任来源的 kit，并在安装前阅读 cckit 展示的执行计划。** 
 
@@ -219,6 +239,7 @@ cckit 装的是仓库作者的代码，因此这些是**不可省略的硬要求
     <skill>/SKILL.md
   envs/<kit>__<skill>__<runtime>/  # 每 skill 一个独立环境
   registry.json                    # 装了什么、装在哪、什么版本
+  envs.json                        # 用户填的环境变量值（不是 venv，注意区别）
   usage.jsonl                      # 用量统计（追加式，并发安全）
 
 <CC 配置目录>/skills/<skill>        # link → store。全局启用
@@ -240,15 +261,15 @@ uv tool install --editable .   # 本机可编辑安装
 
 | 模块 | 职责 |
 |---|---|
-| `cli.py` | argparse 分发到 9 个子命令 |
+| `cli.py` | argparse 分发到 10 个子命令，含 `list` 的依赖标记与 `env` 的查看/设置 |
 | `installer.py` | `add` 全流程：锁 sha → 校验 → lint → 计划确认 → store/env/postinstall/registry/link |
 | `alt.py` | 非标准仓库导入：前置条件 → 物化 → kit-builder 改造 → 审计 → 复用本地安装 |
 | `manifest.py` | `cckit.yaml` 加载 + schema 校验 + 语义检查 |
 | `schema.py` | JSON Schema 加载器（Draft 2020-12） |
 | `lint.py` | 命名 / description / CRLF / prompt injection / typosquatting |
 | `env.py` | uv venv / node env 与解释器解析 |
-| `exec.py` | skill 脚本统一入口（白名单 + 环境变量注入） |
-| `state.py` | 四态派生 + 文件锁 + 原子写 + 清单预算 |
+| `exec.py` | skill 脚本统一入口（白名单 + 环境变量注入：`envs.json` 优先，回落进程环境） |
+| `state.py` | 四态派生 + 文件锁 + 原子写 + 清单预算 + 用户配置（`envs.json` / `conf_files`） |
 | `registry.py` | `registry.json` 原子读写 |
 | `link.py` | 跨平台目录链接层（Windows junction / POSIX symlink） |
 | `doctor.py` | 只读诊断 + 安全修复 |

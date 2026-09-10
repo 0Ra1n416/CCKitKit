@@ -78,6 +78,24 @@ class DoctorBody(BaseModel):
     fix: bool = False
 
 
+class EnvSetBody(BaseModel):
+    kit: str
+    name: str
+    value: str | None = None        # None = 清除该变量
+    skill: str | None = None        # None = kit 级(kit_env 声明的值)
+    scope: str = "global"
+    root: str | None = None
+
+
+class ConfWriteBody(BaseModel):
+    kit: str
+    skill: str
+    path: str                       # conf_files 里的相对路径
+    content: str
+    scope: str = "global"
+    root: str | None = None
+
+
 def _to_path(root: str | None) -> Path | None:
     return Path(root) if root else None
 
@@ -115,6 +133,9 @@ def get_skills(scope: str = "global", root: str | None = None):
     used, limit = state.budget(scope_val, r)
     return {
         "skills": [asdict(s) for s in skills],
+        # kit 级(kit_env)声明单独给一份:它在 kit 卡片的头部渲染,不属于单个 skill
+        "kit_env": {name: (info.get("kit_env") or [])
+                    for name, info in registry.load().get("kits", {}).items()},
         "budget": {"used": used, "limit": limit},
     }
 
@@ -148,6 +169,59 @@ def get_kits():
 def remove_kit(kit: str, body: RemoveKitBody):
     installer.remove_kit(kit, keep_env=body.keep_env)
     return {"message": f"已移除 {kit}"}
+
+
+# ---- 配置:环境变量值 + 可修改的配置文件 ----
+#
+# 读写的路径解析与校验全在 state 里(见 Docs/09):端点绝不自己拼文件路径,
+# 否则"保存配置"会变成任意文件写入。
+
+@app.get("/api/config")
+def get_config(scope: str = "global", root: str | None = None,
+               kit: str = "", skill: str | None = None):
+    """某个 skill 的配置需求;skill 省略时只返回 kit 级(kit_env)的那份。
+
+    环境变量带上当前取值供弹窗预填;conf_files 只给相对路径,内容按需再取。
+    """
+    scope_val = _scope_val(scope)
+    r = _to_path(root)
+    return {
+        "envs": [asdict(x) for x in state.env_requirements(kit, skill, scope_val, r)],
+        "conf_files": state.conf_files(kit, skill) if skill else [],
+    }
+
+
+@app.post("/api/config/env")
+def set_config_env(body: EnvSetBody):
+    scope_val = _scope_val(body.scope)
+    r = _to_path(body.root)
+    state.ensure_config_editable(scope_val, r, body.kit, body.skill)
+
+    req = next((x for x in state.env_requirements(body.kit, body.skill, scope_val, r)
+                if x.name == body.name), None)
+    if req is None:
+        raise CckitError(f"{body.name!r} 不在声明的环境变量里")
+    # 声明在 kit 级就写 kit 桶、在 skill 级就写 skill 桶 —— 与 exec 注入时的查找一致
+    owner = body.skill if req.level == "skill" else None
+    state.set_user_env(req.name, body.value, kit=body.kit, skill=owner,
+                       scope=scope_val, root=r)
+    return {"message": f"{body.name} 已保存" if body.value is not None
+                       else f"{body.name} 已清除"}
+
+
+@app.get("/api/config/conf")
+def read_config_conf(scope: str = "global", root: str | None = None,
+                     kit: str = "", skill: str = "", path: str = ""):
+    state.ensure_config_editable(_scope_val(scope), _to_path(root), kit, skill)
+    return {"path": path, "content": state.read_conf_file(kit, skill, path)}
+
+
+@app.put("/api/config/conf")
+def write_config_conf(body: ConfWriteBody):
+    state.ensure_config_editable(_scope_val(body.scope), _to_path(body.root),
+                                 body.kit, body.skill)
+    state.write_conf_file(body.kit, body.skill, body.path, body.content)
+    return {"message": f"{body.path} 已保存"}
 
 
 # ---- add:两阶段(计划预览 → 确认执行) ----

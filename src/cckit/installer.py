@@ -371,6 +371,13 @@ def run_postinstall(steps: list[dict], kit_dir: Path,
 def _registry_record(source: str, ref: str | None, sha: str | None, data: dict,
                      store_target: Path, envs: dict[str, dict[str, Path]],
                      scope: str, root: Path | None = None) -> dict:
+    """把 manifest 里"读一次就够"的声明快照进 registry,免得 list / Web 每次现场解析。
+
+    注意两个只差一个字母的字段,含义完全不同(见 Docs/09):
+      - `envs`:{runtime: env_dir},python/node **虚拟环境目录**(本函数第一处)
+      - `env` :[{name, required, description}],**环境变量**声明,值由用户在
+        CLI/Web 填写,存在 ~/.cckit/envs.json
+    """
     proj_root = root or config.project_root()
     known = "global" if scope == "global" else str(proj_root)
     skills = []
@@ -379,12 +386,15 @@ def _registry_record(source: str, ref: str | None, sha: str | None, data: dict,
             "name": sk["name"],
             "envs": {rt: str(d) for rt, d in envs[sk["name"]].items()},
             "needs": list(sk.get("needs", [])),
+            "env": [dict(e) for e in sk.get("env") or []],
+            "conf_files": list(sk.get("conf_files") or []),
         })
     return {
         "source": {"url": source, "ref": ref, "sha": sha},
         "version": data.get("version"),
         "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "store": str(store_target),
+        "kit_env": [dict(e) for e in data.get("kit_env") or []],
         "skills": skills,
         "known_scopes": [known],
         "override_scopes": [],
@@ -623,7 +633,11 @@ def _skills_dir_for_scope(scope_value: str) -> Path | None:
 
 
 def remove_kit(kit: str, keep_env: bool = False) -> None:
-    """删 link → 删 env → 删 store → 清 registry 与 skillOverrides 残留。"""
+    """删 link → 删 env → 删 store → 清 registry 与 skillOverrides 残留。
+
+    keep_env 同时保留用户填的环境变量值(~/.cckit/envs.json),便于 remove 后重装调试;
+    否则连同 kit 级与各 skill 级的桶一起清掉。
+    """
     info = registry.get_kit(kit)
     if info is None:
         raise CckitError(f"kit {kit!r} 未安装")
@@ -663,3 +677,11 @@ def remove_kit(kit: str, keep_env: bool = False) -> None:
     for scope_value in info.get("override_scopes", []):
         if scope_value and scope_value != "global":
             state.remove_overrides(names, "project", root=Path(scope_value))
+
+    # 清用户填的环境变量值(kit 级桶 + 该 kit 下所有 skill 级桶)
+    if not keep_env:
+        for scope_value in info.get("known_scopes", []):
+            if scope_value == "global":
+                state.remove_user_envs(kit, "global")
+            else:
+                state.remove_user_envs(kit, "project", root=Path(scope_value))

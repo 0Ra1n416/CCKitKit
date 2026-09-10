@@ -316,3 +316,96 @@ def test_project_override_not_misattributed_to_global_kit(tmp_path):
     assert len(proj) == 1
     assert proj[0].kit == "projkit"
     assert proj[0].state == "off"
+
+
+# ---- 必需环境变量未填的提醒(missing_env) ----
+
+REQ = {"name": "NEEDED", "required": True, "description": "必填"}
+OPT = {"name": "OPTIONAL_VAR", "required": False, "description": "可选"}
+
+
+def _install_env_kit(kit_env=(), skill_env=(), *, kit="envkit", skill="envskill",
+                     link_it=True):
+    """装一个带 env 声明的 kit,返回 skill 的 store 目录。"""
+    store = config.store_dir() / kit
+    skill_dir = store / skill
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\ndescription: x\n---\n", encoding="utf-8")
+    registry.add_kit(kit, {
+        "source": {"url": f"https://x/{kit}", "ref": None, "sha": None},
+        "version": "1.0.0",
+        "store": str(store),
+        "kit_env": [dict(d) for d in kit_env],
+        "skills": [{"name": skill, "envs": {}, "needs": [],
+                    "env": [dict(d) for d in skill_env], "conf_files": []}],
+        "known_scopes": ["global"]})
+    if link_it:
+        skills_dir = config.claude_config_dir() / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        link.create(skill_dir, skills_dir / skill)
+    return skill_dir
+
+
+def _missing(kit="envkit", skill="envskill") -> list[str]:
+    item = next(s for s in state.list_skills("global")
+                if s.kit == kit and s.name == skill)
+    return item.missing_env
+
+
+def test_missing_env_reports_unset_required(monkeypatch):
+    monkeypatch.delenv("NEEDED", raising=False)
+    _install_env_kit(skill_env=[REQ, OPT])
+    assert _missing() == ["NEEDED"]          # 可选的 OPTIONAL_VAR 不报
+
+
+def test_missing_env_cleared_after_setting(monkeypatch):
+    monkeypatch.delenv("NEEDED", raising=False)
+    _install_env_kit(skill_env=[REQ])
+    state.set_user_env("NEEDED", "v", kit="envkit", skill="envskill")
+    assert _missing() == []
+
+
+def test_missing_env_counts_kit_level_for_every_skill(monkeypatch):
+    """kit_env 是 kit 级共用,对 kit 下每个 skill 都算数。"""
+    monkeypatch.delenv("NEEDED", raising=False)
+    _install_env_kit(kit_env=[REQ])
+    assert _missing() == ["NEEDED"]
+
+
+def test_missing_env_accepts_value_from_process_environment(monkeypatch):
+    """与 cckit exec 注入同口径:进程环境里有值也算已着落。"""
+    _install_env_kit(skill_env=[REQ])
+    monkeypatch.setenv("NEEDED", "from-shell")
+    assert _missing() == []
+
+
+def test_missing_env_skill_declaration_tightens_kit(monkeypatch):
+    """同名时 skill 级声明覆盖 kit 级:kit 说可选、skill 说必填 → 要报。"""
+    monkeypatch.delenv("SAME", raising=False)
+    _install_env_kit(kit_env=[{"name": "SAME", "required": False}],
+                     skill_env=[{"name": "SAME", "required": True}])
+    assert _missing() == ["SAME"]            # 且只出现一次,不重复
+
+
+def test_missing_env_skill_declaration_can_relax_kit(monkeypatch):
+    """反过来也一样 —— 与 env_requirements / exec 的取舍保持一致。"""
+    monkeypatch.delenv("SAME", raising=False)
+    _install_env_kit(kit_env=[{"name": "SAME", "required": True}],
+                     skill_env=[{"name": "SAME", "required": False}])
+    assert _missing() == []
+
+
+def test_missing_env_ignores_values_from_other_scope(tmp_path, monkeypatch):
+    """值的作用域要匹配:项目作用域填的值不该让全局条目变得有着落。"""
+    monkeypatch.delenv("NEEDED", raising=False)
+    _install_env_kit(skill_env=[REQ])
+    root = tmp_path / "proj"
+    (root / ".claude").mkdir(parents=True)
+    state.set_user_env("NEEDED", "v", kit="envkit", skill="envskill",
+                       scope="project", root=root)
+    assert _missing() == ["NEEDED"]
+
+
+def test_missing_env_empty_for_kit_without_declarations():
+    _install_env_kit()
+    assert _missing() == []

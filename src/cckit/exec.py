@@ -1,8 +1,12 @@
 """cckit exec —— skill 脚本的统一入口。
 
 定位 skill/env、解析解释器、注入 CCKIT_SKILL_DIR / CCKIT_KIT_DIR /
-CCKIT_ENV_DIR 与 manifest env 变量、记录用量(追加 ~/.cckit/usage.jsonl,
-天然并发安全)、cwd 保持调用方 cwd。scripts 未在 manifest 声明的路径拒绝执行。
+CCKIT_ENV_DIR 与 manifest 声明的环境变量(kit_env + 该 skill 的 env)、
+记录用量(追加 ~/.cckit/usage.jsonl,天然并发安全)、cwd 保持调用方 cwd。
+scripts 未在 manifest 声明的路径拒绝执行。
+
+环境变量的值优先取用户在 CLI/Web 填写的(~/.cckit/envs.json),没有则回落
+调用方的进程环境;两处都没有且声明 required 时**报错中止**,不静默跳过。
 """
 from __future__ import annotations
 
@@ -12,7 +16,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from . import config, env as env_mod, manifest, registry
+from . import config, env as env_mod, manifest, registry, state
 from .errors import CckitError
 
 
@@ -69,15 +73,13 @@ def run(skill: str, script: str, args: list[str], scope: str = "global") -> int:
     if runtime == "node":
         # node_modules 装在 env 目录下,require() 需要 NODE_PATH 才找得到
         env["NODE_PATH"] = str(env_dir / "node_modules")
-    for var in data.get("env", []):
-        name = var.get("name")
-        if not name:
-            continue
-        if name in os.environ:
-            env[name] = os.environ[name]
-        elif var.get("required"):
+    for req in state.env_requirements(kit_name, skill, scope):
+        if req.value is not None:
+            env[req.name] = req.value
+        elif req.required:
             raise ExecError(
-                f"缺少必需的 manifest 环境变量 {name!r}({var.get('description', '')})")
+                f"缺少必需的环境变量 {req.name!r}({req.description})。"
+                f"用 `cckit env {skill} {req.name}` 设置,或在环境里导出该变量")
 
     _record_usage(skill, kit_name, script, runtime)
 

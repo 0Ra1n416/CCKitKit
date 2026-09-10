@@ -105,8 +105,10 @@ export default function App() {
           <div className="flex-1 overflow-y-auto p-4">
             <KitList
               skills={skills}
+              ctx={{ scope: active.scope, root: active.root }}
               onChange={(s, st) => setStateMut.mutate({ skill: s, state: st })}
               onRemove={handleRemove}
+              onRefresh={invalidate}
             />
           </div>
         </SidebarInset>

@@ -21,6 +21,33 @@ export interface SkillItem {
   is_global_skill: boolean
   global_state: string | null
   override: boolean
+  /** skill 级环境变量声明（作者写的，值由用户填） */
+  envs: EnvDecl[]
+  /** 可修改的配置文件，相对 skill 根目录 */
+  conf_files: string[]
+  /** 声明了 required 却还没有值的变量名（kit 级 + skill 级），空数组 = 齐了 */
+  missing_env: string[]
+}
+
+/** manifest 里的环境变量声明：只有名字/是否必需/说明，没有值 */
+export interface EnvDecl {
+  name: string
+  required?: boolean
+  description?: string
+}
+
+/** 一条环境变量需求 + 它当前是否有着落（值来自 /api/config） */
+export interface EnvRequirement {
+  name: string
+  level: "kit" | "skill"
+  required: boolean
+  description: string
+  value: string | null
+}
+
+export interface ConfigView {
+  envs: EnvRequirement[]
+  conf_files: string[]
 }
 
 export interface Budget {
@@ -147,7 +174,12 @@ export const api = {
     }),
 
   skills: (scope: Scope, root?: string) =>
-    req<{ skills: SkillItem[]; budget: Budget }>(
+    req<{
+      skills: SkillItem[]
+      /** kit 级（kit_env）声明，按 kit 名索引；在 kit 卡片头部渲染 */
+      kit_env: Record<string, EnvDecl[]>
+      budget: Budget
+    }>(
       apiUrl(`/api/skills?scope=${scope}${root ? `&root=${encodeURIComponent(root)}` : ""}`),
     ),
 
@@ -162,6 +194,51 @@ export const api = {
     ),
 
   kits: () => req<{ kits: KitInfo[] }>(apiUrl("/api/kits")),
+
+  // 配置:环境变量值 + 可修改的配置文件。
+  // skill 传 null 表示只要 kit 级（kit_env）的那份；root 只在项目作用域用得上。
+  config: (scope: Scope, kit: string, skill: string | null, root?: string) => {
+    const q = new URLSearchParams({ scope, kit })
+    if (skill) q.set("skill", skill)
+    if (root) q.set("root", root)
+    return req<ConfigView>(apiUrl(`/api/config?${q.toString()}`))
+  },
+
+  setEnv: (body: {
+    kit: string
+    name: string
+    value: string | null   // null = 清除该变量
+    skill?: string | null
+    scope: Scope
+    root?: string
+  }) =>
+    req<{ message: string }>(apiUrl("/api/config/env"), {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(body),
+    }),
+
+  readConf: (scope: Scope, kit: string, skill: string, path: string, root?: string) => {
+    const q = new URLSearchParams({ scope, kit, skill, path })
+    if (root) q.set("root", root)
+    return req<{ path: string; content: string }>(
+      apiUrl(`/api/config/conf?${q.toString()}`),
+    )
+  },
+
+  writeConf: (body: {
+    kit: string
+    skill: string
+    path: string
+    content: string
+    scope: Scope
+    root?: string
+  }) =>
+    req<{ message: string }>(apiUrl("/api/config/conf"), {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify(body),
+    }),
 
   removeKit: (kit: string) =>
     req<{ message: string }>(apiUrl(`/api/kits/${encodeURIComponent(kit)}/remove`), {

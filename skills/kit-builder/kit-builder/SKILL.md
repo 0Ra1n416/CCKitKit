@@ -60,7 +60,10 @@ description: 把开发者的普通 skill(一个带 SKILL.md 的目录或几个�
 - `requires.system[]` 里的 `hint` **必须是分平台 map**(`windows` / `linux` / `macos`),
   不能是单个字符串,且至少覆盖 `platforms` 声明的每个平台。
 - `scripts[]` 相对 skill 目录,且**必须真实存在**。
-- `env[]` 的 `name` 必须匹配 `^[A-Z][A-Z0-9_]*$`。
+- `conf_files[]` 相对 skill 目录,**必须真实存在**且不得用绝对路径或 `..` 逃逸。
+- `env[]`(skill 级)与 `kit_env[]`(kit 级)的 `name` 必须匹配 `^[A-Z][A-Z0-9_]*$`;
+  两者**都只有 `name` / `required` / `description` 三个字段,没有 `value` / `default`**
+  —— 值由用户自己填,别把密钥写进 manifest。
 
 ### 第 3 步:核对 SKILL.md
 

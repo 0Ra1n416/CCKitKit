@@ -1,14 +1,15 @@
 """cckit.yaml 的加载与校验。
 
 三步:存在性检查 → yaml.safe_load → JSON Schema 校验 → 语义检查
-(needs 引用、skill 目录与 skills[] 一致、platforms 匹配当前平台、依赖文件存在)。
+(needs 引用、skill 目录与 skills[] 一致、platforms 匹配当前平台、依赖文件存在、
+conf_files 路径安全且存在)。
 没有 cckit.yaml 直接拒绝 —— 这是"合法 kit"的唯一判据(见 Docs/03)。
 
 另外提供 SKILL.md frontmatter 的读取(供 lint / state 读 description)。
 """
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
 
@@ -96,6 +97,42 @@ def semantic_check(data: dict, kit_dir: Path, platform: str | None = None) -> No
             if not (sdir / script).is_file():
                 raise ManifestError(
                     f"skill {sk['name']!r} 声明的脚本不存在: {script}")
+
+    # 6. conf_files[] 必须是 skill 目录内的相对路径且真实存在
+    # CLI 与 Web 都按这个路径读写用户配置,逃逸出去就成了任意文件读写
+    for sk in data.get("skills", []):
+        sdir = kit_dir / sk["name"]
+        for rel in sk.get("conf_files") or []:
+            _check_conf_file(sk["name"], sdir, rel)
+
+
+def _check_conf_file(skill_name: str, skill_dir: Path, rel: str) -> None:
+    """校验单条 conf_files:非空、非绝对、不逃逸,且真实存在。"""
+    if not _is_safe_skill_rel(rel):
+        raise ManifestError(
+            f"skill {skill_name!r} 的 conf_files 必须是 skill 目录内的相对路径: {rel!r}")
+    # 反斜杠统一按分隔符处理:否则 Windows 作者写的 `sub\\f.json` 会绕过 `..` 检查
+    target = skill_dir / str(PurePosixPath(rel.replace("\\", "/")))
+    if not target.is_file():
+        raise ManifestError(f"skill {skill_name!r} 声明的 conf_files 不存在: {rel}")
+    # 纵深防御:哪怕路径本身合法,若它经符号链接指到 skill 目录之外也拒绝
+    try:
+        target.resolve().relative_to(skill_dir.resolve())
+    except ValueError:
+        raise ManifestError(
+            f"skill {skill_name!r} 的 conf_files 指向 skill 目录之外: {rel}")
+
+
+def _is_safe_skill_rel(rel: str) -> bool:
+    """相对路径是否安全:非空、非绝对、且不含 `..` 逃逸。
+
+    两种 Path 都要查:Windows 上 `C:\\x` 与 POSIX 上 `/x` 都得拒绝。
+    """
+    if not rel or not rel.strip():
+        return False
+    if PurePosixPath(rel).is_absolute() or PureWindowsPath(rel).is_absolute():
+        return False
+    return ".." not in PurePosixPath(rel.replace("\\", "/")).parts
 
 
 def read_skill_frontmatter(skill_dir: Path) -> dict:

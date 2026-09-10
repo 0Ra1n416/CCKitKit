@@ -9,7 +9,7 @@ import argparse
 import json
 import sys
 
-from . import doctor, exec as exec_mod, installer, state
+from . import doctor, exec as exec_mod, installer, registry, state
 from .errors import CckitError
 from .manifest import MissingManifestError
 
@@ -92,7 +92,37 @@ def _as_dict(s: state.SkillState) -> dict:
         "is_global_skill": s.is_global_skill,
         "global_state": s.global_state,
         "override": s.override,
+        "envs": s.envs,
+        "conf_files": s.conf_files,
+        "missing_env": s.missing_env,
     }
+
+
+def _kit_env_decls(kit: str | None) -> list[dict]:
+    """kit 级(kit_env)声明的环境变量;非 cckit 管理的条目返回空。"""
+    if not kit:
+        return []
+    return (registry.get_kit(kit) or {}).get("kit_env") or []
+
+
+def _skill_marks(s: state.SkillState) -> str:
+    """skill 行的依赖标记。仅在确有声明时出现,避免给所有行加噪声。"""
+    marks = ""
+    if s.envs:
+        marks += "  [envs]"
+    if s.conf_files:
+        marks += "  [conf_files]"
+    return marks
+
+
+def _missing_mark(s: state.SkillState) -> str:
+    """声明了 required 却还没值的环境变量提醒。
+
+    没有就不占位 —— 与 [envs] / [conf_files] 一样,只在真有事时出现。
+    """
+    if not s.missing_env:
+        return ""
+    return f"  ⚠ 缺必需变量 {'、'.join(s.missing_env)} → cckit env"
 
 
 def _print_list(skills: list[state.SkillState]) -> None:
@@ -108,10 +138,12 @@ def _print_list(skills: list[state.SkillState]) -> None:
         by_kit.setdefault(s.kit or "(非 cckit 管理)", []).append(s)
     for kit, items in by_kit.items():
         ver = next((i.version for i in items if i.version), None)
+        # kit 级(kit_env)声明的环境变量标记在 kit 行上,skill 级的标在各自 skill 行上
+        kit_mark = "  [env]" if _kit_env_decls(items[0].kit) else ""
         if ver:
-            print(f"{kit}  {ver}")
+            print(f"{kit}  {ver}{kit_mark}")
         else:
-            print(kit)
+            print(f"{kit}{kit_mark}")
         for s in items:
             env = _env_label(s)
             scope_tag = "  [project]" if s.scope == "project" else ""
@@ -124,7 +156,7 @@ def _print_list(skills: list[state.SkillState]) -> None:
             else:
                 state_str = s.state
             print(f"  {_SYMBOLS[s.state]} {s.name:<20} {state_str:<16} {env}"
-                  f"{scope_tag}{ro_tag}")
+                  f"{_skill_marks(s)}{scope_tag}{ro_tag}{_missing_mark(s)}")
 
 
 # ---- 子命令 ----
@@ -145,6 +177,45 @@ def cmd_add(args) -> int:
     return 0
 
 
+def _print_env_detail(skills: list[state.SkillState]) -> None:
+    """`list --envs`:逐 skill 列出所需环境变量。
+
+    **不回显值** —— 只报"已设/未设",免得密钥进终端 scrollback。
+    """
+    print("\n[envs]")
+    rows = [s for s in skills if s.managed and s.kit]
+    if not rows:
+        print("  无")
+        return
+    for s in rows:
+        print(f"  {s.name}")
+        reqs = state.env_requirements(s.kit, s.name, state.env_scope_of(s))
+        if not reqs:
+            print("    无")
+            continue
+        for r in reqs:
+            need = "必需" if r.required else "可选"
+            got = "已设" if r.value is not None else "未设"
+            desc = f"  {r.description}" if r.description else ""
+            print(f"    [{r.level:<5}] {r.name:<20} {need}  {got}{desc}")
+
+
+def _print_conf_detail(skills: list[state.SkillState]) -> None:
+    """`list --confs`:逐 skill 列出可改的配置文件(相对 skill 根)。"""
+    print("\n[conf_files]")
+    rows = [s for s in skills if s.managed]
+    if not rows:
+        print("  无")
+        return
+    for s in rows:
+        print(f"  {s.name}")
+        if not s.conf_files:
+            print("    无")
+            continue
+        for rel in s.conf_files:
+            print(f"    {rel}")
+
+
 def cmd_list(args) -> int:
     if args.all:
         scope = None
@@ -160,8 +231,55 @@ def cmd_list(args) -> int:
         print("(无 skill)")
     else:
         _print_list(skills)
+    if args.envs:
+        _print_env_detail(skills)
+    if args.confs:
+        _print_conf_detail(skills)
     used, limit = state.budget(scope)
     print(f"\n清单预算: {_fmt(used)} / {_fmt(limit)} 字符 ({_pct(used, limit)}%)")
+    return 0
+
+
+def cmd_env(args) -> int:
+    """查看 / 设置 / 清除 skill 需要的环境变量。
+
+    值存 ~/.cckit/envs.json,由 `cckit exec` 注入 —— 不写 Claude Code 的 settings.json。
+    声明在 kit_env(kit 级)或 skill 的 env(skill 级)里,由作者写,用户只填值。
+    """
+    scope = _scope(args)
+    kit, _skill_info = registry.find_skill(args.skill, scope)
+    reqs = state.env_requirements(kit, args.skill, scope)
+
+    if args.name is None:                       # 只看不改
+        if not reqs:
+            print(f"{args.skill} 没有声明任何环境变量")
+            return 0
+        for r in reqs:
+            need = "必需" if r.required else "可选"
+            got = "已设" if r.value is not None else "未设"
+            desc = f"  {r.description}" if r.description else ""
+            print(f"[{r.level:<5}] {r.name:<20} {need}  {got}{desc}")
+        return 0
+
+    req = next((r for r in reqs if r.name == args.name), None)
+    if req is None:
+        raise CckitError(
+            f"{args.name!r} 不在 {args.skill!r} 声明的环境变量里"
+            f"(已有声明见 `cckit list --envs`)")
+
+    # 声明在 kit 级就写 kit 桶,在 skill 级就写 skill 桶 —— 与注入时的查找一致
+    owner = args.skill if req.level == "skill" else None
+
+    if args.unset:
+        state.set_user_env(req.name, None, kit=kit, skill=owner, scope=scope)
+        print(f"{req.name} 已清除({scope} 作用域)")
+        return 0
+
+    value = args.value
+    if value is None:
+        value = input(f"{req.name}({req.description or '无说明'}): ").strip()
+    state.set_user_env(req.name, value, kit=kit, skill=owner, scope=scope)
+    print(f"{req.name} 已保存({scope} 作用域),下次 cckit exec 生效")
     return 0
 
 
@@ -266,7 +384,21 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--project", action="store_true", help="只列项目作用域")
     g.add_argument("--all", action="store_true", help="列出全部作用域")
     l.add_argument("--json", action="store_true", help="机器可读输出")
+    l.add_argument("--envs", action="store_true",
+                   help="附上各 skill 需要的环境变量(只报是否已设,不回显值)")
+    l.add_argument("--confs", action="store_true",
+                   help="附上各 skill 可修改的配置文件")
     l.set_defaults(func=cmd_list)
+
+    v = sub.add_parser("env", help="查看/设置 skill 需要的环境变量")
+    v.add_argument("skill")
+    v.add_argument("name", nargs="?",
+                   help="变量名;省略则列出该 skill 的全部环境变量")
+    v.add_argument("value", nargs="?",
+                   help="变量值;省略则交互输入。值存 ~/.cckit/envs.json")
+    v.add_argument("--unset", action="store_true", help="清除该变量的值")
+    v.add_argument("--project", action="store_true", help="作用于项目作用域")
+    v.set_defaults(func=cmd_env)
 
     e = sub.add_parser("enable", help="启用 skill")
     e.add_argument("skill")

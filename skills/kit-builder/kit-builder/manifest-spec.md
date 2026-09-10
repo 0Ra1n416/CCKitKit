@@ -34,8 +34,9 @@ requires:
   node:
     file: package.json
 
-# 需要用户提供的环境变量。cckit exec 时注入,缺失且 required 时报错
-env:
+# kit 共用的环境变量。只声明"要什么",**值由用户自己填**
+# (存在 <cckit 数据目录>/envs.json,由 cckit exec 注入)。缺失且 required 时报错。
+kit_env:
   - name: OPENAI_API_KEY
     required: false
     description: 用于 describe-video 的字幕润色,不填则跳过该步骤
@@ -44,6 +45,11 @@ skills:
   - name: burn-subtitles        # 必须与 skill 目录名一致
     needs: [ffmpeg, python]     # 依赖在 skill 粒度声明
     scripts: [scripts/burn.py]  # 供 lint 校验与 exec 白名单
+    env:                        # 该 skill 专属的环境变量;与 kit_env 同名时以这里为准
+      - name: FONT_DIR
+        required: true
+        description: 字幕字体所在目录
+    conf_files: [config.json]   # 相对 skill 目录;声明"这个文件用户可以改"
   - name: describe-video
     needs: []                   # 纯 prompt,装它不触发任何环境安装
 
@@ -64,11 +70,40 @@ postinstall:
 | `description` | ✓ | 一句话说明 |
 | `platforms` | | `windows` / `linux` / `macos` 的子集,缺省全平台 |
 | `requires` | | 环境需求,见下 |
-| `env` | | 需用户提供的环境变量 |
+| `kit_env` | | kit 共用的环境变量声明,见下 |
 | `skills` | ✓ | 至少一个 |
 | `postinstall` | | 安装后钩子 |
 
 `author` / `homepage` / `license` 为可选元数据。
+
+### `kit_env[]` 与 skill 的 `env[]`
+
+两者形状相同,都是**只声明、不提供值**:
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `name` | ✓ | 变量名,必须匹配 `^[A-Z][A-Z0-9_]*$` |
+| `required` | | 缺省 `false`。为 `true` 且用户没填、环境里也没有 → `cckit exec` 报错中止 |
+| `description` | | 用途说明。CLI / Web 都拿它当提示文案,**建议写** |
+
+- `kit_env` 是 **kit 级**:整个 kit 共用,值填一次即可。
+- skill 里的 `env` 是 **skill 级**:只对该 skill 生效。同名时 **skill 级覆盖 kit 级**。
+- ⚠️ **不要在这里写值。** manifest 里没有 `value` / `default` 字段 —— 值一律由用户
+  在 `cckit env <skill> <NAME> <VALUE>` 或 Web 面板里填,存在 `<cckit 数据目录>/envs.json`。
+  这样能杜绝"作者把自己的密钥提交进仓库、再分发给所有用户"。
+- 只在脚本里读环境变量(`os.environ` / `process.env`)即可,不需要额外的读取代码:
+  `cckit exec` 会在拉起脚本时注入。
+
+### skill 的 `conf_files[]`
+
+一个字符串数组,每项是**相对 skill 目录**的路径,声明"这个文件用户可以改"。
+
+- 路径必须落在 skill 目录内:拒绝绝对路径与 `..` 逃逸(lint 与 `semantic_check` 都会拦)。
+- 文件**必须真实存在**(通常随仓库带一份默认值),否则安装被拒绝。
+- 用途是**展示与编辑**:`cckit list --confs` 会列出来,Web 面板可以预览和修改。
+  cckit 不会读取或解析它,怎么用这个文件由你的脚本决定。
+- ⚠️ 文件就放在 skill 目录里,**`cckit remove`(以及重装)会连同 store 一起删掉**,
+  用户改过的内容会丢。需要长期保留的数据请让脚本写到用户自己的目录,不要依赖这里。
 
 ### `requires.system[]`
 
@@ -98,6 +133,8 @@ PEP 440 约束(如 `>=6.0`、`~=6.0`、`==6.*`,逗号分隔为 AND)比对;不满
 | `name` | ✓ | 必须与 skill 目录名**完全一致**。小写 kebab-case |
 | `needs` | ✓ | 依赖标签数组。空数组表示纯 prompt skill,**不建 env** |
 | `scripts` | | 相对 skill 目录的脚本路径,供 lint 与 `exec` 白名单 |
+| `env` | | 该 skill 专属的环境变量声明,见上 |
+| `conf_files` | | 相对 skill 目录、可供用户修改的配置文件,见上 |
 
 `needs` 的取值:`python` / `node` 触发对应环境安装;其余值视为
 `requires.system[].bin` 的引用,只做存在性检查。引用了未声明的名字 → lint 报错。

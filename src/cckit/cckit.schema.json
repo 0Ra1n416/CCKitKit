@@ -25,7 +25,11 @@
       "description": "缺省视为全平台支持"
     },
     "requires": { "$ref": "#/$defs/requires" },
-    "env": { "type": "array", "items": { "$ref": "#/$defs/envVar" } },
+    "kit_env": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/envVar" },
+      "description": "kit 共用的环境变量。只声明名字与用途,值由用户在 CLI/Web 填写"
+    },
     "skills": {
       "type": "array",
       "minItems": 1,
@@ -117,7 +121,18 @@
           "items": { "type": "string" },
           "description": "python/node 触发环境安装;其余值须为 requires.system[].bin"
         },
-        "scripts": { "type": "array", "items": { "type": "string" } }
+        "scripts": { "type": "array", "items": { "type": "string" } },
+        "env": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/envVar" },
+          "description": "该 skill 专属的环境变量。与 kit_env 同名时 skill 级优先"
+        },
+        "conf_files": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string" },
+          "description": "相对 skill 根目录的路径,标识可供用户修改的配置文件。不得逃逸出 skill 目录"
+        }
       }
     },
     "postinstallStep": {

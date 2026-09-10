@@ -15,9 +15,9 @@ import json
 import os
 import tempfile
 import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Literal
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import Callable, Literal
 
 from . import config, link, manifest, projects, registry
 from . import env as env_mod
@@ -43,6 +43,23 @@ class SkillState:
     is_global_skill: bool = False   # project 作用域下,此条目是「全局 skill 的项目覆盖/跟随」
     global_state: str | None = None # 全局 skill 在全局作用域的状态(供项目覆盖决策)
     override: bool = False          # 全局 skill 是否带项目级覆盖(off/name-only)
+    envs: list[dict] = field(default_factory=list)       # skill 级环境变量声明
+    conf_files: list[str] = field(default_factory=list)  # 可改配置文件,相对 skill 根
+    missing_env: list[str] = field(default_factory=list)  # 声明 required 却还没值的变量名
+
+
+@dataclass
+class EnvRequirement:
+    """一条环境变量需求 + 它当前是否有着落。
+
+    值来源优先 cckit 存储(~/.cckit/envs.json),没有则回落 os.environ。
+    调用方(CLI / Web)自行决定是否回显 `value` —— 密钥类应面具化。
+    """
+    name: str
+    level: str          # "kit"(kit_env 声明) | "skill"(skill 的 env 声明)
+    required: bool
+    description: str
+    value: str | None   # 当前生效的值;None = 尚未设置
 
 
 @dataclass
@@ -197,6 +214,303 @@ def remove_overrides(names: list[str], scope: Scope = "global",
         _release_lock(lock_path)
 
 
+# ---- 用户填写的环境变量(envs.json) ----
+#
+# 与 envs/ 目录(每 skill 一个 venv)**无关**:这里存的是"环境变量名 → 值"。
+# 刻意不写 Claude Code 的 settings.json —— 那会把用户的 model/env/permissions
+# 一起卷进写入路径(见 TODO 决策 D-3.7)。改由 `cckit exec` 注入。
+#
+# 分桶键:{作用域}|{kit}[|{skill}]。作用域为 "global" 或项目根绝对路径,
+# 与 registry 的 known_scopes 表示一致。按 (kit, skill) 分桶意味着**不需要**
+# 变量引用计数:删一个 skill 只删它自己那份,不会波及别的 skill。
+
+_KIT_ENV_BUCKET = "kit_env"
+_SKILL_ENV_BUCKET = "skill_env"
+
+
+def _scope_key(scope: Scope, root: Path | None = None) -> str:
+    """envs.json 的分桶前缀:全局为 "global",项目为项目根的绝对路径。"""
+    if scope == "global":
+        return "global"
+    r = root or config.project_root()
+    if r is None:
+        raise CckitError("不在项目内,无法定位项目作用域的环境变量")
+    return str(r)
+
+
+def _env_bucket_key(scope: Scope, kit: str, skill: str | None = None,
+                    root: Path | None = None) -> str:
+    """桶键:{作用域}|{kit}[|{skill}]。"""
+    key = f"{_scope_key(scope, root)}|{kit}"
+    return f"{key}|{skill}" if skill else key
+
+
+def read_user_envs() -> dict:
+    """读整个 envs.json。不存在返回空;损坏时抛受检 CckitError。"""
+    return _read_json(config.user_envs_path())
+
+
+def _mutate_user_envs(mutate: Callable[[dict], None]) -> None:
+    """读—改—写全程持锁 + 原子替换,与写 settings.json 同一套纪律(D-14)。"""
+    path = config.user_envs_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".cckit.lock")
+    _acquire_lock(lock_path)
+    try:
+        data = _read_json(path)
+        data.setdefault("version", 1)
+        mutate(data)
+        _atomic_write_json(path, data)
+    finally:
+        _release_lock(lock_path)
+
+
+def set_user_env(name: str, value: str | None, *, kit: str,
+                 skill: str | None = None, scope: Scope = "global",
+                 root: Path | None = None) -> None:
+    """记录用户填的环境变量值。value=None 表示删掉该条目。
+
+    skill=None 写 kit 级桶(kit_env 声明的值);否则写 skill 级桶。
+    条目清空后顺手删掉空桶,不给文件留残渣。
+    """
+    bucket = _SKILL_ENV_BUCKET if skill else _KIT_ENV_BUCKET
+    key = _env_bucket_key(scope, kit, skill, root)
+
+    def mutate(data: dict) -> None:
+        section = data.setdefault(bucket, {})
+        entries = section.setdefault(key, {})
+        if value is None:
+            entries.pop(name, None)
+            if not entries:
+                section.pop(key, None)
+        else:
+            entries[name] = value
+        if not section:
+            data.pop(bucket, None)
+
+    _mutate_user_envs(mutate)
+
+
+def remove_user_envs(kit: str, scope: Scope = "global", *,
+                     skill: str | None = None, root: Path | None = None) -> None:
+    """删掉某个 kit(或它下面某个 skill)在该作用域下的用户值。
+
+    skill=None 时清 kit 级桶 + 该 kit 的全部 skill 级桶(卸载整个 kit 用)。
+    """
+    prefix = f"{_scope_key(scope, root)}|{kit}"
+    only = f"{prefix}|{skill}" if skill else None
+
+    def matches(key: str) -> bool:
+        if only is not None:
+            return key == only
+        return key == prefix or key.startswith(prefix + "|")
+
+    def mutate(data: dict) -> None:
+        for bucket in (_KIT_ENV_BUCKET, _SKILL_ENV_BUCKET):
+            section = data.get(bucket)
+            if not isinstance(section, dict):
+                continue
+            for key in [k for k in section if matches(k)]:
+                section.pop(key, None)
+            if not section:
+                data.pop(bucket, None)
+
+    _mutate_user_envs(mutate)
+
+
+def _env_values(user_envs: dict, scope: Scope, kit: str, skill: str | None = None,
+                root: Path | None = None) -> dict[str, str]:
+    """从**已读入**的 envs.json 里取值:kit 级为底,skill 级覆盖。
+
+    与 `stored_env` 分开,是因为 `list_skills` 要读一次文件给几十个 skill 复用,
+    不能每个 skill 都去读一遍 envs.json。
+    """
+    values = dict((user_envs.get(_KIT_ENV_BUCKET) or {}).get(
+        _env_bucket_key(scope, kit, None, root)) or {})
+    if skill:
+        values.update((user_envs.get(_SKILL_ENV_BUCKET) or {}).get(
+            _env_bucket_key(scope, kit, skill, root)) or {})
+    return values
+
+
+def stored_env(scope: Scope, kit: str, skill: str | None = None,
+               root: Path | None = None) -> dict[str, str]:
+    """该 skill 生效的 cckit 存储值:kit 级为底,skill 级覆盖。"""
+    return _env_values(read_user_envs(), scope, kit, skill, root)
+
+
+def missing_required_env(kit_info: dict, skill_rec: dict,
+                         values: dict[str, str]) -> list[str]:
+    """声明了 `required: true`、却到现在还没有值的变量名。
+
+    判定口径与 `cckit exec` 注入时一致:
+      - `kit_env` 是 kit 级共用,对 kit 下**每个** skill 都算数;
+      - 同名变量 skill 级声明覆盖 kit 级(与 `env_requirements` 的取舍相同);
+      - 值先看 cckit 存储,再看调用方的进程环境。
+    """
+    skill_decls = list(skill_rec.get("env") or [])
+    overridden = {d.get("name") for d in skill_decls if d.get("name")}
+    decls = [d for d in (kit_info.get("kit_env") or [])
+             if d.get("name") not in overridden] + skill_decls
+
+    missing: list[str] = []
+    seen: set[str] = set()
+    for decl in decls:
+        name = decl.get("name")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        if not decl.get("required"):
+            continue
+        if not values.get(name) and not os.environ.get(name):
+            missing.append(name)
+    return missing
+
+
+def env_scope_of(s: SkillState) -> Scope:
+    """该条目环境变量值所在的作用域。
+
+    全局 skill 罗列在项目作用域时(D-15),它的值仍在全局桶里 —— 跟随的是
+    skill 本身装在哪,而不是当前在看哪个作用域。
+    """
+    return "global" if s.is_global_skill else s.scope
+
+
+def _registry_skill(kit: str, skill: str) -> dict:
+    """registry 里该 skill 的快照记录;没有则空 dict。"""
+    info = registry.get_kit(kit) or {}
+    return next((s for s in info.get("skills", []) if s.get("name") == skill), {}) or {}
+
+
+def skill_store_dir(kit: str, skill: str) -> Path:
+    """skill 在 store 里的目录,conf_files 的相对路径以它为根。"""
+    info = registry.get_kit(kit)
+    if not info:
+        raise CckitError(f"kit {kit!r} 不在 registry 中")
+    return Path(info["store"]) / skill
+
+
+def conf_files(kit: str, skill: str) -> list[str]:
+    """该 skill 声明可改的配置文件(相对 skill 根)。"""
+    return list(_registry_skill(kit, skill).get("conf_files") or [])
+
+
+def env_requirements(kit: str, skill: str | None, scope: Scope = "global",
+                     root: Path | None = None) -> list[EnvRequirement]:
+    """列出 kit(或某个 skill)声明的环境变量,以及当前取值。
+
+    声明取自 registry 快照(D-3.9),不现场读 manifest。
+    同一个变量在 kit_env 与 skill 的 env 里都出现时,只保留 skill 那条
+    (skill 级覆盖 kit 级),避免同一变量列两行。
+    """
+    info = registry.get_kit(kit)
+    if info is None:
+        return []
+    skill_decls: list[dict] = []
+    if skill:
+        skill_decls = _registry_skill(kit, skill).get("env") or []
+    overridden = {d.get("name") for d in skill_decls if d.get("name")}
+    values = stored_env(scope, kit, skill, root)
+
+    out: list[EnvRequirement] = []
+    for level, decls in (("kit", info.get("kit_env") or []), ("skill", skill_decls)):
+        for decl in decls:
+            name = decl.get("name")
+            if not name or (level == "kit" and name in overridden):
+                continue
+            out.append(EnvRequirement(
+                name=name,
+                level=level,
+                required=bool(decl.get("required")),
+                description=str(decl.get("description") or ""),
+                value=values.get(name) or os.environ.get(name) or None,
+            ))
+    return out
+
+
+# ---- 可修改的配置文件(conf_files) ----
+#
+# 文件就在 skill 目录里(store/<kit>/<skill>/<相对路径>)。CLI 与 Web 都只走这几个
+# 函数读写 —— Web 端点绝不能自己拼路径,否则"保存配置"会变成任意文件写入。
+
+_CONF_MAX_BYTES = 256 * 1024
+
+
+def ensure_config_editable(scope: Scope, root: Path | None, kit: str,
+                           skill: str | None) -> None:
+    """禁止改 installed 态 skill 的配置(UI 禁用了,服务端也要拦)。
+
+    skill=None 表示 kit 级(kit_env 的值),只要 kit 在 registry 里即可。
+
+    非 cckit 管理的 skill(用户手写 / 插件带的)在 `list_skills` 里 `kit` 恒为 None,
+    因此按 (kit, skill) 定位永远匹配不到它们 —— 这类 skill 压根无法被本端点寻址,
+    不需要额外的 managed 判断(判了也是死代码)。
+    """
+    if skill is None:
+        if registry.get_kit(kit) is None:
+            raise CckitError(f"kit {kit!r} 不在 registry 中")
+        return
+    item = next((s for s in list_skills(scope, root)
+                 if s.kit == kit and s.name == skill), None)
+    if item is None:
+        raise CckitError(f"skill {skill!r} 不在 kit {kit!r} 中(或不在当前作用域)")
+    if item.state == "installed":
+        raise CckitError(f"skill {skill!r} 尚未启用(installed 态),不能修改配置")
+
+
+def resolve_conf_path(kit: str, skill: str, rel: str) -> Path:
+    """把 conf_files 里的相对路径解析成绝对路径,并确认它落在 skill 目录内。
+
+    两道闸:① 必须**逐字命中** registry 快照里的声明(客户端传来的路径一律不可信);
+    ② 解析后仍要在 skill 目录内(防 `..` 与符号链接逃逸)。
+    """
+    declared = conf_files(kit, skill)
+    norm = str(PurePosixPath(rel.replace("\\", "/")))
+    if norm not in declared:
+        raise CckitError(f"{rel!r} 不在 {skill!r} 声明的 conf_files 里")
+
+    skill_dir = skill_store_dir(kit, skill)
+    target = (skill_dir / norm).resolve()
+    try:
+        target.relative_to(skill_dir.resolve())
+    except ValueError:
+        raise CckitError(f"配置文件路径越出 skill 目录: {rel}")
+    return target
+
+
+def read_conf_file(kit: str, skill: str, rel: str) -> str:
+    """读一个可修改的配置文件。只支持 UTF-8 文本,且限制体积。"""
+    target = resolve_conf_path(kit, skill, rel)
+    if not target.is_file():
+        raise CckitError(f"配置文件不存在: {rel}")
+    if target.stat().st_size > _CONF_MAX_BYTES:
+        raise CckitError(
+            f"配置文件过大({target.stat().st_size} 字节),超过 "
+            f"{_CONF_MAX_BYTES} 字节上限,请在编辑器里打开")
+    try:
+        return target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise CckitError(f"{rel} 不是 UTF-8 文本,无法在这里编辑")
+
+
+def write_conf_file(kit: str, skill: str, rel: str, content: str) -> None:
+    """写回一个可修改的配置文件(临时文件 + 原子替换,避免写坏用户的配置)。"""
+    target = resolve_conf_path(kit, skill, rel)
+    if len(content.encode("utf-8")) > _CONF_MAX_BYTES:
+        raise CckitError(f"内容过大,超过 {_CONF_MAX_BYTES} 字节上限")
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix="." + target.name + ".",
+                               suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
 # ---- 派生状态 ----
 
 def _derive_state(has_link: bool, override: str | None) -> str:
@@ -244,14 +558,17 @@ def scope_skills_dirs() -> list[tuple[Scope, Path]]:
     return dirs
 
 
-def _registry_meta(reg: dict, kit: str, name: str) -> tuple[str | None, dict[str, str]]:
-    """返回 (version, envs: {runtime: env_dir});registry 无记录时返回 (None, {})。"""
+def _registry_meta(reg: dict, kit: str, name: str) -> tuple[str | None, dict]:
+    """返回 (version, skill 快照记录);registry 无该 skill 时记录为 {}。
+
+    注意记录里 `envs`(运行时→venv 目录)与 `env`(环境变量声明)是两回事。
+    """
     kit_info = reg.get("kits", {}).get(kit)
     if not kit_info:
         return None, {}
     for sk in kit_info.get("skills", []):
         if sk.get("name") == name:
-            return kit_info.get("version"), (sk.get("envs") or {})
+            return kit_info.get("version"), sk
     return kit_info.get("version"), {}
 
 
@@ -281,6 +598,8 @@ def list_skills(scope: Scope | None = None, root: Path | None = None) -> list[Sk
     """
     reg = registry.load()
     store = config.store_dir()
+    # 一次读入,给下面几十个 skill 复用(不能每个 skill 读一遍 envs.json)
+    user_envs = read_user_envs()
     scopes: list[Scope] = ["global", "project"] if scope is None else [scope]
     result: list[SkillState] = []
     linked_managed: set[tuple[str, str]] = set()
@@ -297,6 +616,9 @@ def list_skills(scope: Scope | None = None, root: Path | None = None) -> list[Sk
             is_ln = link.is_link(entry) or link.is_dangling(entry)
             if not is_ln and not entry.is_dir():
                 continue
+            decl_env: list[dict] = []
+            decl_conf: list[str] = []
+            decl_missing: list[str] = []
             if is_ln:
                 target = entry.resolve()
                 managed, kit = _resolve_managed(target, store)
@@ -304,8 +626,13 @@ def list_skills(scope: Scope | None = None, root: Path | None = None) -> list[Sk
                     # 按 (kit, name) 去重:同名 skill 不同 kit 各装一份时,
                     # 一个被 link 不能吞掉另一个未 link 的(见 M1)。
                     linked_managed.add((kit, name))
-                    version, envs = _registry_meta(reg, kit, name)
-                    env_ok = _env_status(envs)
+                    version, rec = _registry_meta(reg, kit, name)
+                    env_ok = _env_status(rec.get("envs") or {})
+                    decl_env = list(rec.get("env") or [])
+                    decl_conf = list(rec.get("conf_files") or [])
+                    decl_missing = missing_required_env(
+                        reg.get("kits", {}).get(kit, {}), rec,
+                        _env_values(user_envs, sc, kit, name, root))
                 else:
                     kit, version, env_ok = None, None, None
             else:
@@ -313,7 +640,9 @@ def list_skills(scope: Scope | None = None, root: Path | None = None) -> list[Sk
                 managed, kit, version, env_ok = False, None, None, None
             st = _derive_state(True, overrides.get(name))
             result.append(SkillState(name, kit, sc, st, managed, env_ok,
-                                     _desc_chars(target), version))
+                                     _desc_chars(target), version,
+                                     envs=decl_env, conf_files=decl_conf,
+                                     missing_env=decl_missing))
 
     # 已安装但未建 link 的 managed skill → installed。归属作用域由 kit 的
     # known_scopes 决定,不硬编码 "global"(项目 kit 的未 link skill 应报 project)。
@@ -332,7 +661,13 @@ def list_skills(scope: Scope | None = None, root: Path | None = None) -> list[Sk
                 env_ok = _env_status(sk.get("envs") or {})
                 result.append(SkillState(name, kit_name, sc, "installed", True,
                                          env_ok, _desc_chars(store / kit_name / name),
-                                         kit_info.get("version")))
+                                         kit_info.get("version"),
+                                         envs=list(sk.get("env") or []),
+                                         conf_files=list(sk.get("conf_files") or []),
+                                         missing_env=missing_required_env(
+                                             kit_info, sk,
+                                             _env_values(user_envs, sc, kit_name,
+                                                         name, root))))
 
     # 全局 kit 的 skill 在项目作用域:列出所有全局 skill(D-15)。
     # 有效状态 = 项目级覆盖(off/name-only)若有;否则跟随全局状态。
@@ -359,6 +694,12 @@ def list_skills(scope: Scope | None = None, root: Path | None = None) -> list[Sk
                 if name in project_kit_names:
                     continue  # 同名项目 kit 存在,覆盖归属项目 kit,不补全局条目
                 env_ok = _env_status(sk.get("envs") or {})
+                # 这些是全局 skill 在项目作用域的视图:它的值存在**全局**桶里(D-15)
+                extra = {"envs": list(sk.get("env") or []),
+                         "conf_files": list(sk.get("conf_files") or []),
+                         "missing_env": missing_required_env(
+                             kit_info, sk,
+                             _env_values(user_envs, "global", kit_name, name))}
                 global_state = get_state(name, "global")
                 if name in proj_ov:
                     st = _derive_state(True, proj_ov[name])
@@ -366,13 +707,13 @@ def list_skills(scope: Scope | None = None, root: Path | None = None) -> list[Sk
                                              env_ok,
                                              _desc_chars(store / kit_name / name),
                                              kit_info.get("version"), True,
-                                             global_state, True))
+                                             global_state, True, **extra))
                 else:
                     result.append(SkillState(name, kit_name, "project", global_state,
                                              True, env_ok,
                                              _desc_chars(store / kit_name / name),
                                              kit_info.get("version"), True,
-                                             global_state, False))
+                                             global_state, False, **extra))
 
     return result
 

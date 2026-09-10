@@ -100,8 +100,8 @@ cckit add ./my-skill --local --alt
 ```
 $ cckit list
 
-video-toolkit  1.2.0  (sha 30287f5)
-  ● burn-subtitles     enabled     env ok
+video-toolkit  1.2.0  [env]
+  ● burn-subtitles     enabled     env ok        [envs]  [conf_files]  ⚠ 缺必需变量 FONT_DIR → cckit env
   ◐ describe-video     name-only   prompt-only
 doc-tools      0.4.1  (sha a1b2c3d)
   ○ pdf-extract        off         env ok
@@ -115,8 +115,58 @@ doc-tools      0.4.1  (sha a1b2c3d)
 
 选项:`--project` 只列项目;`--all` 全作用域;`--json` 机器可读。
 
+**依赖标记**:kit 行末尾的 `[env]` 表示该 kit 有 `kit_env` 声明;skill 行末尾的
+`[envs]` / `[conf_files]` 表示该 skill 有相应声明。没有就不显示,不给每一行加噪声。
+
+**缺配置提醒**:skill 行末尾的 `⚠ 缺必需变量 <名字> → cckit env` 表示该 skill 生效的
+环境变量里有声明 `required: true` 却还没值的(见下)。判定口径与 `cckit exec` 注入时完全
+一致:kit 级与 skill 级声明都算、同名以 skill 级为准、值先看 `envs.json` 再看进程环境。
+没有未填的项就不显示这行 —— 与依赖标记同样是"只在真有事时出现"。
+
+> 注意与 `env MISSING → cckit doctor` 区分:那个是**运行环境(venv)坏了**,要去诊断;
+> 这个只是**变量还没填**,`cckit env` 填上即可。
+
+**`--envs` / `--confs`** 在列表之后追加明细:
+
+```
+$ cckit list --envs
+
+[envs]
+  burn-subtitles
+    [kit  ] OPENAI_API_KEY       可选  未设  用于字幕润色,不填则跳过
+    [skill] FONT_DIR             必需  已设  字幕字体所在目录
+  describe-video
+    无
+```
+
+⚠️ **只报"已设/未设",绝不回显值** —— 否则密钥会进终端 scrollback 与日志。
+没有声明时显示「无」。
+
+`--json` 每个 skill 额外带 `envs` / `conf_files`。
+
 `--json` 应同时列出**非 cckit 管理**的 skill(用户手写、插件带的),标记为只读。
 用户看到的是完整工具箱视图,但只有 cckit 装的能被开关。
+
+## `cckit env <skill> [name] [value]`
+
+查看 / 设置 / 清除 skill 需要的环境变量。
+
+```bash
+cckit env burn-subtitles                      # 列出声明与「已设/未设」
+cckit env burn-subtitles FONT_DIR /usr/fonts  # 设置
+cckit env burn-subtitles FONT_DIR             # 省略值则交互输入
+cckit env burn-subtitles FONT_DIR --unset     # 清除
+cckit env burn-subtitles FONT_DIR --project   # 作用于项目作用域
+```
+
+- 变量必须**已在 manifest 里声明**(`kit_env` 或 skill 的 `env`),不能凭空造 ——
+  否则就是往脚本环境里塞任意变量。
+- 声明在 `kit_env` 里的写 **kit 桶**(整个 kit 共用一份);声明在 skill 里的写
+  **skill 桶**。同名时 skill 级覆盖 kit 级。
+- 值存在 cckit 数据目录的 `envs.json`(锁 + 原子写),由 `cckit exec` 注入。
+  **不写 Claude Code 的 `settings.json`** —— 见 [07-security.md](07-security.md) 第 10 条。
+- 取值优先级:`envs.json` > 调用方的进程环境。两处都没有且声明 `required: true`
+  时,`cckit exec` 报错中止(不静默跳过)。
 
 实现上直接调 `cckit.state.list_skills()`,**不要自己扫目录**——该函数同时服务
 Web 接口,两边必须共用同一份逻辑。
@@ -178,6 +228,14 @@ skill 脚本的统一入口。SKILL.md 里只写这一句,不写解释器路径�
 
 要点:cwd **保持调用方 cwd**(让用户给的相对路径正常工作),脚本自身资源通过
 `CCKIT_SKILL_DIR` 定位。`scripts` 未在 manifest 声明的路径应拒绝执行。
+
+除 `CCKIT_SKILL_DIR` / `CCKIT_KIT_DIR` / `CCKIT_ENV_DIR`(以及 node 的 `NODE_PATH`)
+外,还注入 `kit_env` 与 skill 的 `env` 声明的环境变量:
+
+- 同名时 **skill 级覆盖 kit 级**;
+- 值先取用户在 CLI/Web 填的(`envs.json`),没有再回落调用方的进程环境;
+- 声明 `required: true` 却两处都取不到 → **报错中止**,并给出 `cckit env` 的填写命令;
+- `required: false` 且没值 → 不注入、不报错,由脚本自己决定跳过哪一步。
 
 ## `cckit web`
 

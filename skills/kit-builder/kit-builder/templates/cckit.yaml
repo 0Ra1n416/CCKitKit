@@ -31,16 +31,23 @@ requires:
   # node:
   #   file: package.json
 
-# 需要用户提供的环境变量。cckit exec 时注入,缺失且 required 时报错。
-env:
-  - name: <如 OPENAI_API_KEY>
-    required: false
+# kit 共用的环境变量。只声明名字与用途 —— 值由用户填(cckit env / Web 面板),
+# 存在 cckit 数据目录的 envs.json,由 cckit exec 注入。没有就删掉本段。
+kit_env:
+  - name: <如 OPENAI_API_KEY>   # 必须匹配 ^[A-Z][A-Z0-9_]*$
+    required: false            # true 时用户没填会让 cckit exec 报错中止
     description: <用途;不填则跳过哪一步>
 
 skills:
   - name: <skill-name>         # 必须与 skill 目录名逐字符一致
     needs: []                  # 纯 prompt 留 [];有依赖写 [python] / [node] / [<system bin>]
     scripts: [scripts/<run.py>]  # 可选;相对 skill 目录,必须真实存在
+    # env:                     # 可选;该 skill 专属的环境变量,同名时覆盖 kit_env
+    #   - name: <如 FONT_DIR>
+    #     required: true
+    #     description: <用途>
+    # conf_files:              # 可选;相对 skill 目录,必须真实存在
+    #   - config.json          # ⚠️ 放在 skill 目录里,卸载/重装会一起删掉
 
 # postinstall(可选):只允许写 kit 自己的目录与其 env 目录。
 # postinstall:
