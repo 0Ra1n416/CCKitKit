@@ -2,7 +2,7 @@
 
 # CCKitKit
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](#) [![版本](https://img.shields.io/badge/version-0.3.1-lightgrey)](#) [![测试](https://img.shields.io/badge/tests-170%20passed-brightgreen)](#)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](#) [![版本](https://img.shields.io/badge/version-0.3.2-lightgrey)](#) [![测试](https://img.shields.io/badge/tests-170%20passed-brightgreen)](#)
 
 </div>
 

@@ -26,7 +26,7 @@ from .. import alt, config, doctor, installer, projects, registry, state
 from ..errors import CckitError
 from ..manifest import MissingManifestError
 
-CCKIT_VERSION = "0.3.1"
+CCKIT_VERSION = "0.3.2"
 
 app = FastAPI(title="cckit web", version=CCKIT_VERSION)
 
