@@ -178,6 +178,10 @@ skills:
 - 两者形状相同;**同名时 skill 级覆盖 kit 级**。
 - 值由用户在 `cckit env <skill> <NAME> <VALUE>` 或 Web 面板里填,存在 cckit 数据目录的
   `envs.json`,由 `cckit exec` 注入到脚本环境。
+- ⚠️ **声明只对 `scripts[]` 里的脚本有意义。** 注入发生在 `cckit exec` 拉起脚本的那一刻,
+  所以:声明 `postinstall` 阶段读的变量没用(那时只注入 `CCKIT_KIT_DIR`);纯 prompt skill
+  也没有脚本会去读它。别再在 SKILL.md 里用散文写"请先 export XXX" —— 声明出来,
+  `cckit list --envs` 和 Web 面板会替你告诉用户缺什么。
 - ⚠️ **manifest 里没有 `value` / `default` 字段 —— 别想着写值。** 写进去就会随仓库
   分发给所有人,密钥尤其致命。`required: false` 的变量没值时不注入、不报错,
   脚本用 `os.environ.get(...)` 判断即可。
@@ -333,15 +337,16 @@ cckit 会:找到该 skill 的 env → 按平台解析解释器 → 注入
 在 kit 根目录:
 
 ```bash
-# 方式一:走完整安装管线(校验 + lint + 计划),看到计划后按 N 取消即可
+# 只看校验结果:走完整的校验 + lint + 计划,在确认提示处回答 N 取消
 uv run cckit add ./my-kit --no-enable
-
-# 方式二:只验 schema 与语义,快速定位
-uv run cckit add ./my-kit --no-enable -y
 ```
 
-校验失败会在**做任何事之前**中止并报出所有错误(含路径)。`-y` 会真的执行安装,
-用于"确认它能装";只想验格式就 `--no-enable` 后按 `N`。
+⚠️ **`add` 没有"只校验"模式。** 校验 / lint 的报错在做任何事之前就会全部打出来,
+失败也不会留下残留,所以上面的命令足够验格式。加了 `-y` 就是**真的安装**——那一步
+留给"确认它能装"的时候用,不要在自检阶段用。
+
+> 自动化流程(比如 kit-builder 被 `cckit add --alt` 调用时)**绝对不要加 `-y`**:
+> 那会把 kit 装进用户的 store,等用户走正式安装流程时反而报"kit 已安装"。
 
 ### 7.2 平台自检
 
@@ -377,6 +382,12 @@ Linux(WSL 即可)上跑一遍 `cckit add`,重点看:
 | `needs 引用了未声明的系统依赖` | `needs` 里的名字没在 `requires.system[].bin` 声明 |
 | `hint` 校验不过 | `hint` 写成了字符串,必须是 `{windows/linux/macos: ...}` map |
 | `requires.python.file 指向的文件不存在` | `requirements.txt` 没放在 kit 根,或路径写错 |
+| `conf_files 不存在: x.json` | 声明的文件没随仓库提交,或路径不是相对 skill 目录 |
+| `conf_files 必须是 skill 目录内的相对路径` | 写了绝对路径,或用了 `..` 逃逸 |
+| **脚本读的环境变量没被声明** | 最隐蔽的一类:用户装完看不出缺什么,直到脚本跑崩。逐脚本搜一遍读取点(SKILL.md「找环境变量」) |
+| 用户报"缺少必需的环境变量 X",却不知道在哪儿填 | X 其实被多个 skill 共用,却只写进了一个 skill 的 `env`;应该放 `kit_env` |
+| 用户一直被提醒"缺必需变量 X",但脚本跑起来没事 | X 在代码里是有默认值的,应该写 `required: false` |
+| 用户改了配置文件却不生效 | 文件没进 `conf_files`(只能在 store 里手动找),或脚本读的是另一份 |
 | skill 名大写被拒 | schema 只认小写 kebab-case |
 | 装进 Linux 后脚本跑不起来 | `.sh` 是 CRLF / 没可执行位(§7.2) |
 | 用户反馈"装了但 CC 从不用" | description 缺失或超预算被静默丢弃(§5.3) |
