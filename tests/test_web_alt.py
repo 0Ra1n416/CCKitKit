@@ -14,13 +14,27 @@ web = importlib.import_module("cckit.web.app")
 from test_alt import _install_kit_builder, _minimal_cckit_yaml, _write, _write_skill
 
 
+def _drop_all() -> None:
+    """清掉进程内的暂存对象,并**真正删掉它们持有的临时目录**。
+
+    直接 `.clear()` 只是丢掉引用:StagedInstall 与 _AltSession 各自持有一个
+    `tmp_root`(mkdtemp 出来的目录),要靠 `cleanup()` 才会 rmtree。
+    少了这一步,每跑一次测试就在系统临时目录里攒两个 `cckit-clone-*` 空壳。
+    `cleanup()` 是幂等的(tmp_root 为 None 时直接返回),重复调用安全。
+    """
+    for staged, _ in web._STAGED.values():
+        staged.cleanup()
+    web._STAGED.clear()
+    for sess in web._ALT_SESSIONS.values():
+        sess.cleanup()
+    web._ALT_SESSIONS.clear()
+
+
 @pytest.fixture(autouse=True)
 def _clear_sessions():
-    web._ALT_SESSIONS.clear()
-    web._STAGED.clear()
+    _drop_all()
     yield
-    web._ALT_SESSIONS.clear()
-    web._STAGED.clear()
+    _drop_all()
 
 
 def test_add_preview_non_standard_without_alt(tmp_path):
