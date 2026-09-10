@@ -407,6 +407,51 @@ def _installed_descriptions() -> list[str]:
 
 # ---- add 主流程 ----
 
+def _check_scope_name_conflicts(data: dict, skills_dir: Path | None, scope: str,
+                                proj_root: Path | None,
+                                only_names: set[str] | None) -> None:
+    """目标作用域已被同名 skill 占用时拒绝安装(Docs/cli-spec「必须拦截的情况」)。
+
+    CC 的 skill 名字空间是单层的:link 落点是 <skills_dir>/<name>,没有 kit 前缀,
+    同一作用域内一个名字只能属于一个 kit。不在这里拦,execute 阶段就会静默失效
+    —— set_state 见到已有 link 直接 pass,后装的 skill 只写进 registry 却永远建
+    不上 link(在 list 里显示为 installed),此后按名操作还会因归属歧义全部报错。
+
+    --only 排除掉的 skill 本次不建 link,不参与检查。跨作用域(全局 vs 项目)的
+    同名是允许的,由 CC 的优先级决定谁生效,不在本检查范围内。
+    """
+    if skills_dir is None or not skills_dir.is_dir():
+        return
+    where = "全局作用域" if scope == "global" else f"项目作用域 {proj_root}"
+    problems: list[str] = []
+    for sk in data.get("skills", []):
+        name = sk["name"]
+        if only_names is not None and name not in only_names:
+            continue
+        entry = skills_dir / name
+        if link.is_dangling(entry):
+            problems.append(f"  - {name}: 已有悬空 link {entry}(目标已不存在)"
+                            f" → 先运行 `cckit doctor --fix` 清理")
+        elif link.is_link(entry):
+            owner = state.resolve_managed_kit(Path(entry).resolve())
+            if owner:
+                problems.append(
+                    f"  - {name}: 已被 kit {owner!r} 占用"
+                    f" → 先 `cckit remove {owner}`(或 `cckit disable {name} --purge`)"
+                    f"释放该名字")
+            else:
+                problems.append(f"  - {name}: 已被非 cckit 管理的 link 占用({entry})"
+                                f" → 请手动处理")
+        elif os.path.lexists(entry):
+            problems.append(f"  - {name}: 已存在同名路径 {entry}"
+                            f"(cckit 之外的用户手写 skill 或插件)→ 请手动处理")
+    if problems:
+        raise InstallError(
+            f"以下 skill 名在{where}已被占用,同一作用域内 skill 名必须唯一:\n"
+            + "\n".join(problems)
+            + "\n可用 `--only <skill,...>` 排除这些 skill,或按上面的提示释放该名字后重试。")
+
+
 def stage_install(source: str, *, ref: str | None = None, project: bool = False,
                   only: str | None = None, is_local_path: bool = False,
                   root: Path | None = None) -> StagedInstall:
@@ -449,6 +494,12 @@ def stage_install(source: str, *, ref: str | None = None, project: bool = False,
         store_target = config.store_dir() / kit_name
         if store_target.exists():
             raise InstallError(f"kit {kit_name!r} 已安装(store 已存在),请先 `cckit remove {kit_name}`")
+
+        # 目标作用域已有同名 skill → 拒绝(否则 link 建不上,静默失效,见 Docs/cli-spec)
+        _check_scope_name_conflicts(
+            data,
+            _skills_dir_for_scope("global" if scope == "global" else str(proj_root)),
+            scope, proj_root, only_names)
 
         # 项目安装时检测同名全局 skill(全局盖项目,见 Docs/06 2.3)
         project_warns: list[str] = []

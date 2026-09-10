@@ -1,9 +1,13 @@
 """installer:计划计算与渲染(不触发网络/uv 的部分)。"""
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
 from types import SimpleNamespace
 
-from cckit import config, installer, manifest
+import pytest
+
+from cckit import config, installer, link, manifest, registry, state
 
 
 def test_compute_plan(tmp_path):
@@ -209,3 +213,110 @@ def test_compute_plan_records_version_error(monkeypatch, tmp_path):
 
     assert [d["bin"] for d in plan.system_version_error] == ["ffmpeg"]
     assert plan.system_missing == []
+
+
+# ---- 同名 skill:同一作用域内拒绝安装 ----
+
+def _write(path: Path, text: str) -> None:
+    """以 LF 写入(Windows 上 write_text 会转成 CRLF,触发 lint 噪声)。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+
+def _make_kit_src(root: Path, kit: str, skills: list[str]) -> Path:
+    """造一个本地 kit 源码目录(stage_install 走 is_local_path,不碰网络)。"""
+    src = root / f"src-{kit}"
+    manifest_text = ("cckit: 1\n" f"kit: {kit}\n" "version: 0.1.0\n"
+                     "description: test kit\n" "skills:\n")
+    for s in skills:
+        manifest_text += f"  - name: {s}\n    needs: []\n"
+    _write(src / "cckit.yaml", manifest_text)
+    for s in skills:
+        _write(src / s / "SKILL.md", f"---\nname: {s}\ndescription: {kit} 的 {s}\n---\n")
+    return src
+
+
+def _install_other_kit(kit: str, skill: str, *, scope: str = "global",
+                       root: Path | None = None, link_it: bool = True) -> None:
+    """模拟"先装的另一个 kit":写 store + registry,link_it=False 则不建 link。"""
+    store_skill = config.store_dir() / kit / skill
+    _write(store_skill / "SKILL.md", f"---\ndescription: {kit} 的 {skill}\n---\n")
+    registry.add_kit(kit, {
+        "source": {"url": f"https://x/{kit}", "ref": None, "sha": None},
+        "version": "1.0.0",
+        "store": str(config.store_dir() / kit),
+        "skills": [{"name": skill, "envs": {}, "needs": []}],
+        "known_scopes": ["global" if scope == "global" else str(root)],
+        "override_scopes": [],
+    })
+    if link_it:
+        state.set_state(skill, "enabled", scope, kit=kit, root=root)
+
+
+def test_stage_install_rejects_same_name_in_global(tmp_path):
+    """同名 skill 已在全局占用 → 拒绝,并指名占用者(否则 link 建不上,静默失效)。"""
+    _install_other_kit("kit-a", "foo")
+    src = _make_kit_src(tmp_path, "kit-b", ["foo"])
+
+    with pytest.raises(installer.InstallError) as ei:
+        installer.stage_install(str(src), is_local_path=True)
+
+    msg = str(ei.value)
+    assert "foo" in msg and "kit-a" in msg
+    assert not (config.store_dir() / "kit-b").exists()  # 没留下残留
+
+
+def test_stage_install_rejects_same_name_in_project(tmp_path):
+    """项目作用域同理:link 落点同是 <root>/.claude/skills/<name>。"""
+    root = tmp_path / "proj"
+    (root / ".claude").mkdir(parents=True)
+    _install_other_kit("kit-a", "foo", scope="project", root=root)
+    src = _make_kit_src(tmp_path, "kit-b", ["foo"])
+
+    with pytest.raises(installer.InstallError) as ei:
+        installer.stage_install(str(src), is_local_path=True, project=True, root=root)
+
+    assert "项目作用域" in str(ei.value)
+
+
+def test_stage_install_allows_same_name_when_not_linked(tmp_path):
+    """另一个 kit 只是装进 store 没建 link(--no-enable)时不冲突:
+    没有 link 就不占名字,这正是 list 按 (kit, name) 去重的前提(见 M1)。"""
+    _install_other_kit("kit-a", "foo", link_it=False)
+    src = _make_kit_src(tmp_path, "kit-b", ["foo"])
+
+    staged = installer.stage_install(str(src), is_local_path=True)
+    staged.cleanup()  # 没抛异常即通过
+
+
+def test_stage_install_only_bypasses_conflict(tmp_path):
+    """--only 排除掉的 skill 本次不建 link,不参与冲突检查。"""
+    _install_other_kit("kit-a", "foo")
+    src = _make_kit_src(tmp_path, "kit-b", ["foo", "bar"])
+
+    staged = installer.stage_install(str(src), is_local_path=True, only="bar")
+    staged.cleanup()
+
+
+def test_stage_install_rejects_non_managed_dir(tmp_path):
+    """cckit 之外的用户手写 skill 目录同样占名字,不覆盖。"""
+    _write(config.claude_config_dir() / "skills" / "foo" / "SKILL.md", "手写的")
+    src = _make_kit_src(tmp_path, "kit-b", ["foo"])
+
+    with pytest.raises(installer.InstallError) as ei:
+        installer.stage_install(str(src), is_local_path=True)
+
+    assert "用户手写" in str(ei.value)
+
+
+def test_stage_install_rejects_dangling_link(tmp_path):
+    """悬空 link 也占名字 —— set_state 见到 link 就 pass,不指出来会同样建不上。"""
+    _install_other_kit("kit-a", "foo")
+    shutil.rmtree(config.store_dir() / "kit-a")  # 目标没了 → link 悬空
+    src = _make_kit_src(tmp_path, "kit-b", ["foo"])
+
+    with pytest.raises(installer.InstallError) as ei:
+        installer.stage_install(str(src), is_local_path=True)
+
+    assert "doctor --fix" in str(ei.value)

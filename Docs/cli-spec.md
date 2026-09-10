@@ -84,7 +84,16 @@ cckit add ./my-skill --local --alt
 - 当前平台不在 `platforms` 内 → 拒绝,不等装完才发现
 - 系统依赖缺失 → 报告并给**当前平台**的 hint,询问是继续(env 仍可建)还是中止
 - link 目标已存在真实目录 → 报错说明这是用户手写的 skill,不覆盖
-- **项目安装时存在同名全局 skill → 明确警告"全局会覆盖项目版"**
+- **同作用域已存在同名 skill → 拒绝安装**。CC 的 skill 名字空间是单层的(link 落点
+  是 `<skills_dir>/<name>`,没有 kit 前缀),一个名字在一个作用域内只能属于一个 kit。
+  不拦的后果是静默失效:`state.set_state` 见到已有 link 直接 `pass`,后装的 skill
+  只写进 registry 却永远建不上 link(在 `list` 里显示为 installed),此后按名操作
+  (`enable` / `disable` / `exec`)还会因归属歧义报错。报错需点名占用者(哪个 kit、
+  悬空 link、还是用户手写的目录)并给出释放该名字的办法;`--only` 排除掉的 skill
+  本次不建 link,不参与检查。检查看的是**目标作用域的名字有没有被 link 占用**,
+  与 `--no-enable` 无关(该名字在这个作用域已注定建不上 link)。
+- **项目安装时存在同名全局 skill → 明确警告"全局会覆盖项目版"**(跨作用域同名是
+  允许的,由 CC 的优先级决定谁生效,不属于上一条的拒绝范围)
 
 ## `cckit list`
 
