@@ -17,7 +17,9 @@ cckit add ./local-kit --project --local
 
 ### 流程
 
-1. **clone** 到临时目录,解析 `--ref`(缺省默认分支)
+1. **clone** 到临时目录,解析 `--ref`(缺省默认分支)。落盘前**剥离 `.git`**——
+   store 只要文件树,来源与 sha 已记进 registry;留着 `.git` 还会把只读的对象文件
+   带进 store(见 06),是 remove 删不干净的源头
 2. **锁定 commit sha**——记录 sha 而非分支名。分支会被作者事后改动
 3. **校验 manifest**:存在性 → JSON Schema → 语义检查(`needs` 引用、skill 目录与
    `skills[]` 一致、平台匹配)。任一失败则**中止且不留残留**
@@ -27,6 +29,10 @@ cckit add ./local-kit --project --local
 6. **移入 store**,建 env,装依赖,跑 postinstall
 7. **建 link** 启用(除非 `--no-enable`)
 8. **写 registry**,报告清单预算占用
+
+store 里已有同名目录时报错并**区分两种情况**:registry 有记录 = 真装过,提示
+`cckit remove <kit>`;registry 无记录 = 上次 remove 没删干净的残留,提示同样的命令
+但说明这是残留——否则用户会卡在"add 说已安装、remove 说未安装"。
 
 ### 关键选项
 
@@ -198,8 +204,22 @@ settings。
 
 删 link → 删 env → 删 store → 清理 registry 与 `skillOverrides` 残留条目。
 
+删 link 分两步:先按 registry 的 `known_scopes` + skill 名删(能处理"link 指向漂移
+到别处"的情况),再**按目标路径反查**所有指向本 store 的 link 兜底——registry 不知道的
+项目根、记录丢失后剩下的 link 都在这步收掉。留下悬空 link 同样占住 skill 名,下一次
+`add` 会被它挡住。
+
 ⚠️ **不能只删 skill 目录。** env 在 `~/.cckit/envs/`、状态在 registry 与
 settings.json,必须由 cckit 跟踪清理。
+
+⚠️ **store 必须真的删掉,删不掉就报错。** 报告"已移除"却留下 store,会让后续 add
+永远卡在"store 已存在"。删目录统一走 `fsutil.rmtree`(先清只读位再删,Windows 上
+git 的对象文件是只读的,见 06);确实删不掉时抛错且**不动 registry**,让用户排掉
+占用后重试。
+
+**残留兜底**:registry 里没有该 kit 记录、但 store 下有同名目录时(老版本在 Windows
+上留下的半截产物),`remove <kit>` 直接把它清掉(连同指向它的 link 与按 `<kit>__*`
+命名的 env),而不是回一句"未安装"。否则用户两头堵死。
 
 `--keep-env` 保留 env(便于重装调试)。
 
@@ -212,6 +232,7 @@ settings.json,必须由 cckit 跟踪清理。
 | `uv` 是否在 PATH | 缺失则无法建 env |
 | 悬空 link(目标已消失) | 用 `lexists && !exists` 检出 |
 | link 指向是否与 registry 一致 | 手工改动会导致漂移 |
+| store 是否有 registry 无记录的目录 | 上次 remove 的半截残留会卡住 add |
 | env 是否完整、解释器是否可执行 | 换机 / Python 升级会坏 |
 | 系统依赖是否仍在 | 用户可能卸了 ffmpeg |
 | **`disableSkillShellExecution` 是否开启** | 开了则**所有带脚本 skill 静默失效** |

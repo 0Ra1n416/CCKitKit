@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
-import shutil
 import threading
 import time
 import uuid
@@ -22,11 +21,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import alt, config, doctor, installer, projects, registry, state
+from .. import alt, config, doctor, fsutil, installer, projects, registry, state
 from ..errors import CckitError
 from ..manifest import MissingManifestError
 
-CCKIT_VERSION = "0.3.2"
+CCKIT_VERSION = "0.3.3"
 
 app = FastAPI(title="cckit web", version=CCKIT_VERSION)
 
@@ -386,7 +385,7 @@ class _AltSession:
 
     def cleanup(self) -> None:
         if self.tmp_root is not None:
-            shutil.rmtree(self.tmp_root, ignore_errors=True)
+            fsutil.rmtree(self.tmp_root, ignore_errors=True)
             self.tmp_root = None
             self.repo_dir = None
 

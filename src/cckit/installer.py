@@ -29,7 +29,7 @@ from typing import Iterator
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion
 
-from . import config, env as env_mod, lint, link, manifest, registry, state
+from . import config, env as env_mod, fsutil, lint, link, manifest, registry, state
 from .errors import CckitError
 
 
@@ -75,7 +75,7 @@ class StagedInstall:
 
     def cleanup(self) -> None:
         """放弃安装时清理临时 clone 目录(幂等)。"""
-        shutil.rmtree(self.tmp_root, ignore_errors=True)
+        fsutil.rmtree(self.tmp_root, ignore_errors=True)
 
 
 @dataclass
@@ -88,7 +88,12 @@ class ProgressEvent:
 
 # ---- clone ----
 def _clone(source: str, ref: str | None, tmp_root: Path, is_local_path: bool) -> tuple[Path, str | None]:
-    """clone 到临时目录,返回 (kit 目录, commit sha)。本地非 git 目录 sha 为 None。"""
+    """clone 到临时目录,返回 (kit 目录, commit sha)。本地非 git 目录 sha 为 None。
+
+    无论哪条分支,返回的目录都**不含 .git**:来源与 sha 已记进 registry,git 历史
+    对安装/卸载都没有用处,却会把 `.git/objects` 的只读文件带进 store —— 那是
+    Windows 上 remove 删不干净的源头(见 fsutil.rmtree)。
+    """
     tmp_dir = tmp_root / "kit"
     if is_local_path:
         p = Path(source).expanduser().resolve()
@@ -111,6 +116,9 @@ def _clone(source: str, ref: str | None, tmp_root: Path, is_local_path: bool) ->
         sha = subprocess.run(
             ["git", "-C", str(tmp_dir), "rev-parse", "HEAD"],
             capture_output=True, text=True, check=True).stdout.strip()
+    # 剥离 .git。删不掉时不让安装失败(只读位已由 fsutil 处理,剩下的是真占用),
+    # 代价只是退回"store 里带 .git"的老样子,而 remove 现在已经能删干净。
+    fsutil.rmtree(tmp_dir / ".git", ignore_errors=True)
     return tmp_dir, sha
 
 
@@ -327,7 +335,7 @@ def build_envs(data: dict, kit_dir: Path) -> dict[str, dict[str, Path]]:
             result[name] = envs
     except Exception:
         for d in created:
-            shutil.rmtree(d, ignore_errors=True)
+            fsutil.rmtree(d, ignore_errors=True)
         raise
     return result
 
@@ -503,6 +511,13 @@ def stage_install(source: str, *, ref: str | None = None, project: bool = False,
 
         store_target = config.store_dir() / kit_name
         if store_target.exists():
+            # registry 有记录 = 真装过;没有 = 上次 remove/install 删到一半的残留。
+            # 两种情况给不同的出路,否则用户会卡在"add 说已安装、remove 说未安装"。
+            if registry.get_kit(kit_name) is None:
+                raise InstallError(
+                    f"store 里有同名残留目录(registry 无记录): {store_target}\n"
+                    f"这是上次 remove 没删干净的产物。清掉即可再装: "
+                    f"`cckit remove {kit_name}`(或手动删除该目录)")
             raise InstallError(f"kit {kit_name!r} 已安装(store 已存在),请先 `cckit remove {kit_name}`")
 
         # 目标作用域已有同名 skill → 拒绝(否则 link 建不上,静默失效,见 Docs/cli-spec)
@@ -530,7 +545,7 @@ def stage_install(source: str, *, ref: str | None = None, project: bool = False,
             only_names=only_names, project_warns=project_warns,
         )
     except Exception:
-        shutil.rmtree(tmp_root, ignore_errors=True)
+        fsutil.rmtree(tmp_root, ignore_errors=True)
         raise
 
 
@@ -578,14 +593,14 @@ def execute_install(staged: StagedInstall, *, no_enable: bool = False) -> Iterat
         used, limit = state.budget(staged.scope, staged.root)
         yield ProgressEvent("done", "done", f"清单预算: {used} / {limit} 字符")
     except Exception:
-        shutil.rmtree(store_target, ignore_errors=True)
+        fsutil.rmtree(store_target, ignore_errors=True)
         for d in env_dirs:
-            shutil.rmtree(d, ignore_errors=True)
+            fsutil.rmtree(d, ignore_errors=True)
         if reg_added and kit:
             registry.remove_kit(kit)
         raise
     finally:
-        shutil.rmtree(staged.tmp_root, ignore_errors=True)
+        fsutil.rmtree(staged.tmp_root, ignore_errors=True)
 
 
 def install(source: str, *, ref: str | None = None, project: bool = False,
@@ -632,6 +647,47 @@ def _skills_dir_for_scope(scope_value: str) -> Path | None:
     return Path(scope_value) / ".claude" / "skills"
 
 
+def _remove_envs_of(kit: str) -> None:
+    """删掉某个 kit 名下的所有 env 目录(按 `<kit>__<skill>__<runtime>` 命名约定)。
+
+    只在 registry 记录已丢失时用:那时拿不到 skills 里的 envs 映射,只能按命名
+    约定兜底,否则残留的 env 永远不会被回收。
+    """
+    envs_dir = config.envs_dir()
+    if not envs_dir.is_dir():
+        return
+    prefix = f"{kit}__"
+    for d in envs_dir.iterdir():
+        if d.is_dir() and d.name.startswith(prefix):
+            fsutil.rmtree(d, ignore_errors=True)
+
+
+def _remove_links_into(store: Path) -> None:
+    """删掉所有指向该 store 的 link。
+
+    registry 里的 known_scopes + skill 名只能覆盖"记录在案"的那些;手工在别的项目根
+    建的 link、registry 丢失后剩下的 link,都只能按目标路径反查。留着就是悬空 link
+    —— 它同样占住 skill 名,挡住下一次 add。
+    """
+    for p in state.links_into(store):
+        link.remove(p)
+
+
+def _remove_store(kit: str, store: Path) -> None:
+    """删 store 目录,失败时报受检错误(而不是让 rmtree 的裸 traceback 冒上去)。
+
+    这里刻意**不吞异常**:remove 报告"已移除"就必须真的移除,否则残留的 store 会
+    让后续 add 永远卡在"store 已存在"。失败时 registry 保持不动,用户排掉占用
+    重跑一次 remove 即可。
+    """
+    try:
+        fsutil.rmtree(store)
+    except OSError as e:
+        raise CckitError(
+            f"store 未能完全删除: {store}({e})\n"
+            f"registry 未改动,排查占用后重试 `cckit remove {kit}`,或手动删除该目录") from e
+
+
 def remove_kit(kit: str, keep_env: bool = False) -> None:
     """删 link → 删 env → 删 store → 清 registry 与 skillOverrides 残留。
 
@@ -640,6 +696,16 @@ def remove_kit(kit: str, keep_env: bool = False) -> None:
     """
     info = registry.get_kit(kit)
     if info is None:
+        # registry 无记录但 store 目录还在 = 上次 remove/install 删到一半的残留
+        # (老版本在 Windows 上删 .git 只读文件会静默失败,见 fsutil.rmtree)。
+        # 清掉它:否则 add 报"store 已存在"、remove 报"未安装",用户无路可走。
+        orphan = config.store_dir() / kit
+        if orphan.exists():
+            _remove_links_into(orphan)
+            _remove_store(kit, orphan)
+            if not keep_env:
+                _remove_envs_of(kit)
+            return
         raise CckitError(f"kit {kit!r} 未安装")
     names = [sk["name"] for sk in info.get("skills", [])]
 
@@ -657,12 +723,16 @@ def remove_kit(kit: str, keep_env: bool = False) -> None:
     if not keep_env:
         for sk in info.get("skills", []):
             for env_dir in (sk.get("envs") or {}).values():
-                shutil.rmtree(Path(env_dir), ignore_errors=True)
+                fsutil.rmtree(Path(env_dir), ignore_errors=True)
 
-    # 删 store
+    # 删 store(连带所有指向它的 link)
     store = Path(info.get("store", ""))
-    if store.exists():
-        shutil.rmtree(store, ignore_errors=True)
+    if store.is_absolute():
+        # 兜底:known_scopes 之外的 link 也要收干净。store 已被手动删掉时同样适用
+        # —— 这时留着的就是悬空 link,一样挡住 add。
+        _remove_links_into(store)
+        if store.exists():
+            _remove_store(kit, store)
 
     # 清 registry
     registry.remove_kit(kit)

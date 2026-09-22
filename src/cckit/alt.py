@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import installer, lint, manifest, registry, state
+from . import fsutil, installer, lint, manifest, registry, state
 from .errors import CckitError
 
 
@@ -280,7 +280,12 @@ def materialize(source: str, ref: str | None, is_local_path: bool,
             raise AltError(f"拉取仓库失败(exit {e.returncode}): {source}") from e
         except OSError as e:
             raise AltError(f"拉取仓库失败: {e}") from e
-        shutil.rmtree(repo_dir / ".git", ignore_errors=True)
+        # 这里必须**删干净**:残留的半截 .git 会让下一步 stage_install 把它当成
+        # git 源去 clone,报一堆和真实原因无关的 git 错误。删不掉就当场说清楚。
+        try:
+            fsutil.rmtree(repo_dir / ".git")
+        except OSError as e:
+            raise AltError(f"无法剥离临时 clone 的 .git: {repo_dir / '.git'}({e})") from e
     return repo_dir
 
 
@@ -579,10 +584,10 @@ def run_alt_conversion(source: str, ref: str | None, is_local_path: bool,
         convert_repo(repo_dir, emit, is_cancelled, client_holder)
         return tmp_root, repo_dir
     except _StandardRepo as e:
-        shutil.rmtree(tmp_root, ignore_errors=True)
+        fsutil.rmtree(tmp_root, ignore_errors=True)
         raise AltError(f"仓库已是标准 kit,无需 alt 流程") from e
     except Exception:
-        shutil.rmtree(tmp_root, ignore_errors=True)
+        fsutil.rmtree(tmp_root, ignore_errors=True)
         raise
 
 
@@ -621,7 +626,7 @@ def install_alt(source: str, *, ref: str | None = None, project: bool = False,
 
         # 标准仓库:继续现有安装流程,不调用 Claude Code。
         if (repo_dir / "cckit.yaml").is_file():
-            shutil.rmtree(tmp_root, ignore_errors=True)
+            fsutil.rmtree(tmp_root, ignore_errors=True)
             installer.install(source, ref=ref, project=project, no_enable=no_enable,
                               only=only, assume_yes=assume_yes,
                               is_local_path=is_local_path, root=root)
@@ -677,4 +682,4 @@ def install_alt(source: str, *, ref: str | None = None, project: bool = False,
             staged.cleanup()
             raise
     finally:
-        shutil.rmtree(tmp_root, ignore_errors=True)
+        fsutil.rmtree(tmp_root, ignore_errors=True)

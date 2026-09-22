@@ -80,7 +80,7 @@ export function AppSidebar({
               </svg>
               <span className="truncate">CCKitKit</span>
               <Badge variant="outline" className="ml-auto text-[11px] font-normal">
-                v0.3.2
+                v0.3.3
               </Badge>
             </SidebarMenuButton>
           </SidebarMenuItem>

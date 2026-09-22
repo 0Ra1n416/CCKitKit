@@ -36,6 +36,7 @@ def run(fix: bool = False, on_event=None) -> list[Finding]:
 
     findings += _check_links()
     findings += _check_envs()
+    findings += _check_store_orphans()
     findings += _check_system_deps()
     findings += _check_shell_execution()
     findings += _check_budget()
@@ -84,6 +85,43 @@ def _check_envs() -> list[Finding]:
                     findings.append(Finding(
                         "env", "error", f"{label} env 缺失或解释器不可执行",
                         f"重建:`cckit doctor --fix` 或 `cckit remove {kit}` 后重新 add"))
+    return findings
+
+
+def _links_into(store: Path) -> list[str]:
+    """哪些 link 指向这个 store 目录(判断孤儿 store 是否其实还在被用)。"""
+    return sorted(p.name for p in state.links_into(store))
+
+
+def _check_store_orphans() -> list[Finding]:
+    """store 里的目录在 registry 里没有记录 —— 要么是上次 remove/add 的半截残留,
+    要么是 registry.json 丢了。
+
+    这类问题不报出来,用户只会看到 add 说"store 已存在"、remove 说"未安装",
+    两头堵死而看不出原因。**不自动修**:registry.json 被人为删掉时,这里看到的是
+    全部 kit,自动删等于清空 store —— 按名字确认是用户的事(`cckit remove <kit>`
+    已能处理这种残留)。
+    """
+    findings: list[Finding] = []
+    store_dir = config.store_dir()
+    if not store_dir.is_dir():
+        return findings
+    known = registry.load().get("kits", {})
+    for entry in sorted(store_dir.iterdir()):
+        if entry.name in known or not entry.is_dir():
+            continue
+        linked = _links_into(entry)
+        if linked:
+            findings.append(Finding(
+                "store", "warn",
+                f"store 有目录 {entry} 但 registry 无记录,且仍有 link 指向它"
+                f"({', '.join(linked)})—— 像是 registry.json 丢失,不是残留",
+                f"确认后重新 `cckit add` 该 kit 以恢复记录;确认之前不要删这个目录"))
+        else:
+            findings.append(Finding(
+                "store", "warn",
+                f"store 有残留目录 {entry}(registry 无记录,也没有 link 指向它)",
+                f"清理:`cckit remove {entry.name}`(或手动删除该目录)"))
     return findings
 
 

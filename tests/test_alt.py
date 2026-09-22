@@ -93,11 +93,32 @@ def test_materialize_remote_clone_and_strip(monkeypatch, tmp_path):
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(alt.subprocess, "run", fake_run)
-    monkeypatch.setattr(alt.shutil, "rmtree", lambda p, **kw: None)
 
     repo = alt.materialize("https://x/y.git", "v1", False, tmp_path / "out")
     assert (repo / "f.txt").is_file()
+    assert not (repo / ".git").exists()  # 残留半截 .git 会让下一步 stage_install 去 clone 它
     assert any("checkout" in c and "v1" in c for c in calls)
+
+
+def test_materialize_raises_when_git_cannot_be_stripped(monkeypatch, tmp_path):
+    """剥不掉 .git 就当场说清楚,而不是留给后面一堆无关的 git 报错。"""
+    def fake_run(argv, **kw):
+        if argv[0] == "git" and argv[1] == "clone":
+            out = tmp_path / "out" / "repo"
+            out.mkdir(parents=True)
+            (out / ".git").mkdir()
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def boom(path, **kw):
+        raise PermissionError("被占用")
+
+    monkeypatch.setattr(alt.subprocess, "run", fake_run)
+    monkeypatch.setattr(alt.fsutil, "rmtree", boom)
+
+    with pytest.raises(alt.AltError) as ei:
+        alt.materialize("https://x/y.git", None, False, tmp_path / "out")
+
+    assert ".git" in str(ei.value)
 
 
 # ---- 前置条件 ----

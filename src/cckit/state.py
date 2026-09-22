@@ -540,6 +540,35 @@ def resolve_managed_kit(target: Path) -> str | None:
     return kit if managed else None
 
 
+def links_into(store: Path) -> list[Path]:
+    """所有目标落在该 store 目录里的 link 路径。remove / doctor 用它兜底清理。
+
+    单靠 registry 的 known_scopes + skill 名只能覆盖"记录在案"的 link:用户手工在
+    别的项目根建的、registry 记录丢失后剩下的,都只能按目标路径反查。悬空 link 同样
+    会占住 skill 名挡住下一次 add,所以宁可反查一遍。
+    悬空 link 的 resolve() 不会抛错(返回不存在的目标路径),照常能匹配上。
+
+    ⚠️ 只接受**绝对路径**:空串 / 相对路径会 resolve 到当前目录,那样匹配到的就成了
+    用户自己的项目 link。registry 里记的 store 路径恒为绝对路径。
+    """
+    if not store.is_absolute():
+        return []
+    store = store.resolve()
+    found: list[Path] = []
+    for _, d in scope_skills_dirs():
+        if not d.is_dir():
+            continue
+        for entry in d.iterdir():
+            if not link.is_link(entry):
+                continue
+            try:
+                Path(entry).resolve().relative_to(store)
+            except (ValueError, OSError):
+                continue
+            found.append(entry)
+    return found
+
+
 def scope_skills_dirs() -> list[tuple[Scope, Path]]:
     """所有可能存在 link 的 skills 目录(含 known_scopes 里的历史项目目录)。
 
